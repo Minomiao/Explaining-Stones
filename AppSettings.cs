@@ -9,8 +9,8 @@ namespace ExplainingStones;
 /// </summary>
 internal static class AppSettings
 {
-    /// <summary>尚未设置时使用的默认音乐路径。</summary>
-    public const string DefaultMusicPath = @"D:\codes\Explaining Stones\music.mp3";
+    /// <summary>尚未设置时使用的默认音乐路径，随应用安装目录解析。</summary>
+    public static string DefaultMusicPath => Path.Combine(AppContext.BaseDirectory, "theme.mp3");
 
     private static readonly string SettingsDirectory =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ExplainingStones");

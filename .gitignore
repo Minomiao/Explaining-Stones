@@ -4,6 +4,7 @@ obj/
 
 # IDE 本地状态
 .vs/
+.trae/
 
 # 运行日志
 winui-log.txt
