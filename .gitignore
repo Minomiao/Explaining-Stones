@@ -1,0 +1,9 @@
+# 构建产物
+bin/
+obj/
+
+# IDE 本地状态
+.vs/
+
+# 运行日志
+winui-log.txt

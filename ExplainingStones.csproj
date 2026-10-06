@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>ExplainingStones</RootNamespace>
+    <AssemblyName>Explaining Stones</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <UseWinUI>true</UseWinUI>
+    <!-- 应用程序清单：声明支持的 Windows 版本（DPI 感知在 Program.Main 中设置） -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <WindowsPackageType>None</WindowsPackageType>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- 入口点由 Program.Main 提供（WinForms 消息循环），禁用 XAML 生成的 Main -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+    <!-- 本项目不使用 WPF，跳过 WindowsDesktop SDK 引入的 WPF XAML 编译器，
+         否则它会和 WinUI 的 XAML 编译器抢同一批 Page/ApplicationDefinition 项 -->
+    <ImportFrameworkWinFXTargets>true</ImportFrameworkWinFXTargets>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Stone.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>
