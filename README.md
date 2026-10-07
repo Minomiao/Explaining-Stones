@@ -1,11 +1,15 @@
-
-
 <h1 align="center">Explaining Stones</h1>
 
 <p align="center">一块讲解石</p>
 
 ## 功能
-- **三维声源**
+
+- **逐像素透明**：轮廓外不挡鼠标
+- **投影阴影**：随远近一同缩放
+- **播放列表**：打开文件即加入，条目可删除或单曲循环
+- **老式播放器音效**：爆豆声与老式收音机声可分别开关
+- **三维声源**：左右声像、双耳时间差与距离衰减
+- **立体声开关**：关闭后左右声道相同
 
 <p align="center">
   <img src="Stone.png" width="200" alt="Explaining Stones">
@@ -36,7 +40,7 @@ dotnet build ExplainingStones.csproj -c Release
 
 ## 音乐
 
-首次运行使用内置的 `theme.mp3`。可在设置面板中换成任意本地文件，支持 mp3 / wav / m4a / flac。
+播放列表管理曲目：打开文件即加入列表，条目可删除或设为单曲循环。首次运行内置 `theme.mp3`，支持 mp3 / wav / m4a / flac。
 
 ## 配置
 
@@ -44,8 +48,11 @@ dotnet build ExplainingStones.csproj -c Release
 
 | 文件 | 内容 |
 |---|---|
-| `music.txt` | 音乐文件路径 |
-| `noise.txt` | 是否叠加底噪 |
+| `playlist.txt` | 播放列表 |
+| `current.txt` | 当前曲目下标 |
+| `hiss.txt` | 老式收音机声开关 |
+| `crackle.txt` | 爆豆声开关 |
+| `stereo.txt` | 立体声开关 |
 | `spatial.txt` | 声源远近 Z |
 
 ## 许可证

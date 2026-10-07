@@ -3,17 +3,25 @@ using NAudio.Wave;
 
 namespace ExplainingStones;
 
-/// <summary>把文件音频做成无缝单曲循环。</summary>
+/// <summary>把文件音频做成单曲循环，或播放到结尾时通知一次以便切换下一首。</summary>
 internal sealed class LoopingSampleProvider : ISampleProvider
 {
     private readonly AudioFileReader _reader;
+    private bool _finished;
 
-    public LoopingSampleProvider(AudioFileReader reader)
+    public LoopingSampleProvider(AudioFileReader reader, bool loop)
     {
         _reader = reader;
+        Loop = loop;
     }
 
     public WaveFormat WaveFormat => _reader.WaveFormat;
+
+    /// <summary>是否单曲循环。</summary>
+    public bool Loop { get; set; }
+
+    /// <summary>播放到结尾且不循环时触发一次（在音频线程上）。</summary>
+    public event Action? Finished;
 
     public int Read(float[] buffer, int offset, int count)
     {
@@ -32,28 +40,41 @@ internal sealed class LoopingSampleProvider : ISampleProvider
                 break;
             }
 
-            _reader.Position = 0;   // 播放到头后回到开头，实现单曲循环
+            if (Loop)
+            {
+                _reader.Position = 0;   // 播放到头后回到开头
+                _finished = false;
+                continue;
+            }
+
+            if (!_finished)
+            {
+                _finished = true;
+                Finished?.Invoke();
+            }
+
+            break;
         }
 
         return total;
     }
 }
 
-/// <summary>生成"老式播放器"底噪的样本（磁带嘶嘶声 + 唱片爆豆声），可循环读取。</summary>
+/// <summary>循环读取一段预先合成的噪声样本，可随时开关。</summary>
 internal sealed class NoiseSampleProvider : ISampleProvider
 {
     private readonly float[] _samples;
     private int _position;
 
-    public NoiseSampleProvider(int sampleRate, int channels)
+    public NoiseSampleProvider(int sampleRate, int channels, float[] samples)
     {
         WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, channels);
-        _samples = NoiseGenerator.Create(sampleRate);
+        _samples = samples;
     }
 
     public WaveFormat WaveFormat { get; }
 
-    /// <summary>是否启用底噪，关闭时输出静音。</summary>
+    /// <summary>是否启用该噪声，关闭时输出静音。</summary>
     public bool Enabled { get; set; } = true;
 
     public int Read(float[] buffer, int offset, int count)
@@ -108,12 +129,29 @@ internal sealed class SpatialSampleProvider : ISampleProvider
 
     public WaveFormat WaveFormat => _source.WaveFormat;
 
+    /// <summary>是否启用立体声处理；关闭后左右声道相同。</summary>
+    public bool Stereo { get; set; } = true;
+
     public int Read(float[] buffer, int offset, int count)
     {
         int read = _source.Read(buffer, offset, count);
         int frames = read / 2;
         if (frames == 0)
         {
+            return read;
+        }
+
+        if (!Stereo)
+        {
+            // 单声道播放：先合并左右再原样送到两个声道，声像与延迟不再参与
+            for (int f = 0; f < frames; f++)
+            {
+                int i = offset + f * 2;
+                float mono = (buffer[i] + buffer[i + 1]) * 0.5f;
+                buffer[i] = mono;
+                buffer[i + 1] = mono;
+            }
+
             return read;
         }
 
@@ -176,45 +214,65 @@ internal sealed class SpatialSampleProvider : ISampleProvider
     }
 }
 
-/// <summary>合成一段首尾可无缝循环的底噪样本（单声道浮点）。</summary>
+/// <summary>合成老式播放器的两种噪声（单声道浮点），首尾均可无缝循环。</summary>
 internal static class NoiseGenerator
 {
-    public static float[] Create(int sampleRate)
+    private const float Seconds = 4f;
+
+    /// <summary>老式收音机声：低通白噪声的嘶嘶声。</summary>
+    public static float[] CreateHiss(int sampleRate)
     {
-        const float seconds = 4f;
-        int loopCount = (int)(sampleRate * seconds);
+        int loopCount = (int)(sampleRate * Seconds);
         int fade = sampleRate / 100;              // 10ms 交叉淡化，保证循环处无接缝
         var buffer = new float[loopCount + fade];
 
-        var random = new Random();
+        var random = new Random(1);
         float hissState = 0f;
-        int crackleSamples = 0;
-        float crackleGain = 0f;
-
         for (int i = 0; i < buffer.Length; i++)
         {
             // 嘶嘶声：低通白噪声，削弱高频毛刺；再叠一点全频白噪音，听起来更"脏"
             float white = (float)(random.NextDouble() * 2.0 - 1.0);
             hissState += (white - hissState) * 0.35f;
-            float value = hissState * 0.045f + white * 0.012f;
+            buffer[i] = hissState * 0.045f + white * 0.012f;
+        }
 
-            // 爆豆声：随机触发一段快速衰减的噪声
-            if (crackleSamples == 0 && random.NextDouble() < 0.0008)
+        return Loop(buffer, loopCount, fade);
+    }
+
+    /// <summary>爆豆声：随机触发、快速衰减的噪声脉冲。</summary>
+    public static float[] CreateCrackle(int sampleRate)
+    {
+        int loopCount = (int)(sampleRate * Seconds);
+        int fade = sampleRate / 100;
+        var buffer = new float[loopCount + fade];
+
+        var random = new Random(2);
+        int remaining = 0;
+        float gain = 0f;
+        for (int i = 0; i < buffer.Length; i++)
+        {
+            float value = 0f;
+            if (remaining == 0 && random.NextDouble() < 0.0008)
             {
-                crackleSamples = random.Next(20, 80);
-                crackleGain = (float)(0.10 + random.NextDouble() * 0.45);
+                remaining = random.Next(20, 80);
+                gain = (float)(0.10 + random.NextDouble() * 0.45);
             }
-            if (crackleSamples > 0)
+            if (remaining > 0)
             {
-                value += (float)(random.NextDouble() * 2.0 - 1.0) * crackleGain;
-                crackleGain *= 0.9f;
-                crackleSamples--;
+                value = (float)(random.NextDouble() * 2.0 - 1.0) * gain;
+                gain *= 0.9f;
+                remaining--;
             }
 
             buffer[i] = value;
         }
 
-        // 用末尾多出的样本与开头交叉淡化，循环播放时听不出接缝
+        return Loop(buffer, loopCount, fade);
+    }
+
+    /// <summary>用末尾多出的样本与开头交叉淡化，循环播放时听不出接缝。</summary>
+    private static float[] Loop(float[] buffer, int loopCount, int fade)
+    {
         var samples = new float[loopCount];
         for (int i = 0; i < loopCount; i++)
         {

@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
 using Windows.Foundation;
@@ -14,7 +15,8 @@ using WinRT.Interop;
 namespace ExplainingStones;
 
 /// <summary>
-/// WinUI 3 设置窗口：选择音乐文件位置，并调整声源在三维空间中的位置。
+/// WinUI 3 设置窗口：左侧导航分为「音乐」与「音效」两页。
+/// 音乐页维护播放列表，改动立即生效。
 /// </summary>
 public sealed partial class SettingsWindow : Window
 {
@@ -43,7 +45,7 @@ public sealed partial class SettingsWindow : Window
         int dpi = hwnd != IntPtr.Zero ? GetDpiForWindow(hwnd) : 96;
         double scale = dpi > 0 ? dpi / 96.0 : 1.0;
         AppWindow.Resize(new Windows.Graphics.SizeInt32(
-            (int)Math.Round(560 * scale), (int)Math.Round(540 * scale)));
+            (int)Math.Round(680 * scale), (int)Math.Round(560 * scale)));
 
         // 关闭时只隐藏，避免 WinUI 消息循环结束（结束后无法再次打开窗口）
         AppWindow.Closing += (_, e) =>
@@ -53,23 +55,96 @@ public sealed partial class SettingsWindow : Window
         };
 
         BrowseButton.Click += async (_, _) => await BrowseAsync();
-        SaveButton.Click += (_, _) => Save();
-        NoiseCheck.Click += (_, _) => AppSettings.NoiseEnabled = NoiseCheck.IsChecked == true;
+        CrackleCheck.Click += (_, _) => AppSettings.CrackleEnabled = CrackleCheck.IsChecked == true;
+        HissCheck.Click += (_, _) => AppSettings.HissEnabled = HissCheck.IsChecked == true;
+        StereoCheck.Click += (_, _) => AppSettings.StereoEnabled = StereoCheck.IsChecked == true;
         XSlider.ValueChanged += (_, _) => PushSpatialFromPanel();
         YSlider.ValueChanged += (_, _) => PushSpatialFromPanel();
         ZSlider.ValueChanged += (_, _) => PushSpatialFromPanel();
         SpatialState.Changed += OnSpatialStateChanged;
+        AppSettings.PlaylistChanged += RefreshPlaylist;
 
         BuildSpatialView();
     }
 
     public void Show()
     {
-        PathBox.Text = AppSettings.MusicPath;
-        NoiseCheck.IsChecked = AppSettings.NoiseEnabled;
+        HissCheck.IsChecked = AppSettings.HissEnabled;
+        CrackleCheck.IsChecked = AppSettings.CrackleEnabled;
+
+        // 单扬声器设备不支持立体声：开关置灰并说明
+        bool stereoSupported = SpatialMusicPlayer.OutputSupportsStereo();
+        StereoCheck.IsEnabled = stereoSupported;
+        StereoCheck.IsChecked = stereoSupported && AppSettings.StereoEnabled;
+        StereoLabel.Text = stereoSupported ? "立体声" : "立体声：在此设备上不支持";
+
+        RefreshPlaylist();
         SyncSlidersFromState();
         AppWindow.Show();
         Activate();
+    }
+
+    /// <summary>左侧导航切换：在音乐与音效两页之间切换。</summary>
+    private void OnNavSelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
+    {
+        bool music = (args.SelectedItem as NavigationViewItem)?.Tag as string == "music";
+        MusicPage.Visibility = music ? Visibility.Visible : Visibility.Collapsed;
+        SoundPage.Visibility = music ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>重建播放列表，当前曲目加粗显示。</summary>
+    private void RefreshPlaylist()
+    {
+        PlaylistPanel.Children.Clear();
+
+        IReadOnlyList<PlaylistItem> list = AppSettings.Playlist;
+        if (list.Count == 0)
+        {
+            PlaylistPanel.Children.Add(new TextBlock { Text = "列表为空", Opacity = 0.6 });
+            return;
+        }
+
+        int current = AppSettings.CurrentIndex;
+        for (int i = 0; i < list.Count; i++)
+        {
+            PlaylistPanel.Children.Add(BuildPlaylistRow(i, list[i], i == current));
+        }
+    }
+
+    private FrameworkElement BuildPlaylistRow(int index, PlaylistItem item, bool current)
+    {
+        var row = new Grid { ColumnSpacing = 8 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var name = new TextBlock
+        {
+            Text = System.IO.Path.GetFileName(item.Path),
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            FontWeight = current ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal
+        };
+        ToolTipService.SetToolTip(name, item.Path);
+        row.Children.Add(name);
+
+        var loop = new ToggleButton
+        {
+            IsChecked = item.Loop,
+            Content = new FontIcon { Glyph = "\uE8ED", FontSize = 14 }
+        };
+        ToolTipService.SetToolTip(loop, "单曲循环");
+        loop.Click += (_, _) => AppSettings.SetLoop(index, loop.IsChecked == true);
+        Grid.SetColumn(loop, 1);
+        row.Children.Add(loop);
+
+        var remove = new Button { Content = new FontIcon { Glyph = "\uE74D", FontSize = 14 } };
+        ToolTipService.SetToolTip(remove, "从列表删除");
+        remove.Click += (_, _) => AppSettings.RemoveFromPlaylist(index);
+        Grid.SetColumn(remove, 2);
+        row.Children.Add(remove);
+
+        return row;
     }
 
     /// <summary>面板滑块变化：更新声源位置（并让桌宠跟着移动）。</summary>
@@ -216,20 +291,8 @@ public sealed partial class SettingsWindow : Window
         var file = await picker.PickSingleFileAsync();
         if (file is not null)
         {
-            PathBox.Text = file.Path;
+            AppSettings.AddToPlaylist(file.Path);
         }
-    }
-
-    private void Save()
-    {
-        string path = PathBox.Text.Trim();
-        if (path.Length == 0)
-        {
-            return;
-        }
-
-        AppSettings.MusicPath = path;
-        AppWindow.Hide();
     }
 
     [DllImport("user32.dll")]

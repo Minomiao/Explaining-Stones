@@ -44,6 +44,7 @@ public sealed class PetForm : Form
     private bool _movedFar;                // 按下后是否位移超过阈值
     private bool _wantPlay;                // 用户是否希望播放
     private bool _paused;
+    private string? _playingPath;           // 正在播放的曲目路径
     private bool _applyingSpatialMove;     // 面板在移动桌宠时，忽略位置回灌
     private readonly float _dpiScale;      // 系统 DPI 缩放
     private int _contentWidth;             // 内容尺寸（不含阴影留白）
@@ -87,9 +88,10 @@ public sealed class PetForm : Form
 
         _tray = BuildTrayIcon();
 
-        AppSettings.MusicPathChanged += OnMusicPathChanged;
-        AppSettings.NoiseEnabledChanged += OnNoiseEnabledChanged;
+        AppSettings.PlaylistChanged += OnPlaylistChanged;
+        AppSettings.AudioEffectsChanged += OnAudioEffectsChanged;
         SpatialState.Changed += OnSpatialChanged;
+        _player.TrackEnded += OnTrackEnded;
 
         // 初始显示在屏幕右下角（同时会把该位置同步为声源位置）
         var area = Screen.PrimaryScreen!.WorkingArea;
@@ -459,23 +461,74 @@ public sealed class PetForm : Form
 
     private void StartMusic()
     {
-        string path = AppSettings.MusicPath;
-        if (!File.Exists(path))
+        if (AppSettings.Current is null)
         {
-            MessageBox.Show($"未找到音乐文件：\n{path}\n\n请在托盘菜单中选择“设置…”。", Text,
+            MessageBox.Show("播放列表为空，请在托盘菜单中选择“设置…”添加音乐。", Text,
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
+        PlayCurrent();
+    }
+
+    /// <summary>播放列表中的当前曲目。</summary>
+    private void PlayCurrent()
+    {
+        PlaylistItem? item = AppSettings.Current;
+        if (item is null)
+        {
+            _player.Close();
+            _wantPlay = false;
+            _playingPath = null;
+            return;
+        }
+
+        if (!File.Exists(item.Path))
+        {
+            MessageBox.Show($"未找到音乐文件：\n{item.Path}\n\n请在托盘菜单中选择“设置…”。", Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            _wantPlay = false;
+            return;
+        }
+
         _paused = false;
-        _wantPlay = _player.Play(path);
+        _wantPlay = _player.Play(item.Path, item.Loop);
         if (!_wantPlay)
         {
             MessageBox.Show("音乐播放失败，请确认文件格式是否受支持（mp3 / wav）。", Text);
             return;
         }
 
-        _player.NoiseEnabled = AppSettings.NoiseEnabled;
+        _playingPath = item.Path;
+        ApplyAudioEffects();
+    }
+
+    /// <summary>当前曲目播完：切到列表中的下一首。</summary>
+    private void OnTrackEnded()
+    {
+        if (!IsHandleCreated)
+        {
+            return;
+        }
+
+        BeginInvoke(new Action(() =>
+        {
+            if (!_wantPlay)
+            {
+                return;
+            }
+
+            AppSettings.CurrentIndex += 1;   // 到列表末尾后回到第一首
+            PlayCurrent();
+        }));
+    }
+
+    /// <summary>把音效开关同步到播放器。</summary>
+    private void ApplyAudioEffects()
+    {
+        _player.HissEnabled = AppSettings.HissEnabled;
+        _player.CrackleEnabled = AppSettings.CrackleEnabled;
+        _player.StereoEnabled = AppSettings.StereoEnabled;
     }
 
     private void ToggleMusic()
@@ -498,8 +551,8 @@ public sealed class PetForm : Form
         }
     }
 
-    /// <summary>设置窗口改了音乐路径：若正在播放，立即切换到新文件。</summary>
-    private void OnMusicPathChanged()
+    /// <summary>设置窗口改了播放列表：正在播放的曲目被删除或替换时跟随更新。</summary>
+    private void OnPlaylistChanged()
     {
         if (!IsHandleCreated)
         {
@@ -508,26 +561,39 @@ public sealed class PetForm : Form
 
         BeginInvoke(new Action(() =>
         {
-            if (_wantPlay)
+            if (!_wantPlay)
             {
-                _paused = false;
-                if (_player.Play(AppSettings.MusicPath))
-                {
-                    _player.NoiseEnabled = AppSettings.NoiseEnabled;
-                }
+                return;
             }
+
+            PlaylistItem? item = AppSettings.Current;
+            if (item is null)
+            {
+                _player.Close();
+                _wantPlay = false;
+                _playingPath = null;
+                return;
+            }
+
+            if (item.Path == _playingPath)
+            {
+                _player.Loop = item.Loop;   // 只改了循环标记，无需重播
+                return;
+            }
+
+            PlayCurrent();
         }));
     }
 
-    /// <summary>设置窗口切换了底噪开关，立即生效。</summary>
-    private void OnNoiseEnabledChanged()
+    /// <summary>设置窗口改了音效开关，立即生效。</summary>
+    private void OnAudioEffectsChanged()
     {
         if (!IsHandleCreated)
         {
             return;
         }
 
-        BeginInvoke(new Action(() => _player.NoiseEnabled = AppSettings.NoiseEnabled));
+        BeginInvoke(new Action(ApplyAudioEffects));
     }
 
     /// <summary>把桌宠在桌面上的位置映射为声源的左右（x）与上下（y）。</summary>
@@ -602,9 +668,10 @@ public sealed class PetForm : Form
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
-        AppSettings.MusicPathChanged -= OnMusicPathChanged;
-        AppSettings.NoiseEnabledChanged -= OnNoiseEnabledChanged;
+        AppSettings.PlaylistChanged -= OnPlaylistChanged;
+        AppSettings.AudioEffectsChanged -= OnAudioEffectsChanged;
         SpatialState.Changed -= OnSpatialChanged;
+        _player.TrackEnded -= OnTrackEnded;
 
         _tray.Visible = false;
         _tray.Dispose();
