@@ -36,6 +36,7 @@ public sealed class PetForm : Form
     private readonly SpatialMusicPlayer _player = new();
     private readonly Bitmap? _source;
     private Bitmap? _bitmap;
+    private readonly Icon _appIcon;
     private readonly NotifyIcon _tray;
 
     private bool _dragging;
@@ -85,6 +86,8 @@ public sealed class PetForm : Form
         _bitmap = ComposePet();
         ClientSize = new Size(_canvasWidth, _canvasHeight);
         _lastZ = SpatialState.Z;
+
+        _appIcon = SvgIcons.CreateAppIcon(LogicalToPixels(16));
 
         _tray = BuildTrayIcon();
 
@@ -373,7 +376,7 @@ public sealed class PetForm : Form
         {
             Text = "Explaining Stones",
             Visible = true,
-            Icon = CreateTrayIcon()
+            Icon = _appIcon
         };
 
         // 左键 / 右键均弹出现代菜单
@@ -385,18 +388,6 @@ public sealed class PetForm : Form
             }
         };
         return tray;
-    }
-
-    private Icon CreateTrayIcon()
-    {
-        if (_source is null)
-        {
-            return SystemIcons.Application;
-        }
-
-        int traySize = LogicalToPixels(16);
-        using var iconBitmap = new Bitmap(_source, new Size(traySize, traySize));
-        return Icon.FromHandle(iconBitmap.GetHicon());
     }
 
     // ===== 交互：拖动 / 单击播放 / 右键菜单 =====
@@ -675,6 +666,7 @@ public sealed class PetForm : Form
 
         _tray.Visible = false;
         _tray.Dispose();
+        _appIcon.Dispose();
 
         _player.Dispose();
         _bitmap?.Dispose();

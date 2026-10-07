@@ -12,6 +12,8 @@
     <UseWinUI>true</UseWinUI>
     <!-- 应用程序清单：声明支持的 Windows 版本（DPI 感知在 Program.Main 中设置） -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- exe 图标，由 Assets/icons/app.svg 渲染生成 -->
+    <ApplicationIcon>Stone.ico</ApplicationIcon>
     <WindowsPackageType>None</WindowsPackageType>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <!-- 入口点由 Program.Main 提供（WinForms 消息循环），禁用 XAML 生成的 Main -->
@@ -24,6 +26,12 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="Svg.Skia" Version="5.2.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 托盘图标源文件：嵌入程序集，运行时由 SvgIcons 渲染 -->
+    <EmbeddedResource Include="Assets\icons\*.svg" />
   </ItemGroup>
 
   <ItemGroup>
