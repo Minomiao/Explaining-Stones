@@ -146,18 +146,33 @@ internal static class AppSettings
         PlaylistChanged?.Invoke();
     }
 
-    /// <summary>设置某条目的单曲循环开关。</summary>
+    /// <summary>设置某条目的单曲循环开关；单曲循环同时只能有一条。</summary>
     public static void SetLoop(int index, bool loop)
     {
         lock (Gate)
         {
             List<PlaylistItem> list = Load();
-            if (index < 0 || index >= list.Count || list[index].Loop == loop)
+            if (index < 0 || index >= list.Count)
             {
                 return;
             }
 
-            list[index].Loop = loop;
+            bool changed = false;
+            for (int i = 0; i < list.Count; i++)
+            {
+                bool value = loop && i == index;
+                if (list[i].Loop != value)
+                {
+                    list[i].Loop = value;
+                    changed = true;
+                }
+            }
+
+            if (!changed)
+            {
+                return;
+            }
+
             SavePlaylist();
         }
 
@@ -214,6 +229,7 @@ internal static class AppSettings
         }
 
         var list = new List<PlaylistItem>();
+        bool loopTaken = false;
         if (File.Exists(PlaylistFile))
         {
             foreach (string line in File.ReadAllLines(PlaylistFile))
@@ -221,7 +237,10 @@ internal static class AppSettings
                 int tab = line.IndexOf('\t');
                 if (tab > 0 && tab + 1 < line.Length)
                 {
-                    list.Add(new PlaylistItem(line[(tab + 1)..], line[..tab] == "1"));
+                    // 单曲循环唯一：只认文件中第一个标记
+                    bool loop = line[..tab] == "1" && !loopTaken;
+                    loopTaken |= loop;
+                    list.Add(new PlaylistItem(line[(tab + 1)..], loop));
                 }
             }
         }
