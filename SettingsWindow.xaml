@@ -68,7 +68,16 @@
                             </Button>
                         </Grid>
 
-                        <StackPanel x:Name="PlaylistPanel" Spacing="6" />
+                        <!-- 播放列表：纯白底，边缘用多层半透明描边做出内凹阴影 -->
+                        <Border Background="White" CornerRadius="8" RequestedTheme="Light">
+                            <Border BorderThickness="1" BorderBrush="#33000000" CornerRadius="8" Padding="1">
+                                <Border BorderThickness="1" BorderBrush="#1A000000" CornerRadius="7" Padding="1">
+                                    <Border BorderThickness="1" BorderBrush="#0D000000" CornerRadius="6">
+                                        <StackPanel x:Name="PlaylistPanel" Spacing="6" Margin="12,10,12,10" />
+                                    </Border>
+                                </Border>
+                            </Border>
+                        </Border>
 
                         <TextBlock Text="打开文件即加入列表；条目可删除或设为单曲循环。点击桌宠播放 / 暂停。"
                                    Opacity="0.7"
