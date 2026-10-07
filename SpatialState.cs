@@ -10,39 +10,46 @@ internal enum SpatialOrigin
 }
 
 /// <summary>
-/// 声源在三维空间中的位置：x 为左右（-1 左 ~ 1 右），y 为上下（-1 下 ~ 1 上），
-/// z 为远近（0 贴近屏幕平面 ~ 1 最远）。
+/// 单颗石头的声源位置：x 为左右（-1 左 ~ 1 右），y 为上下（-1 下 ~ 1 上），
+/// z 为远近（0 贴近屏幕平面 ~ 1 最远）。每颗石头各持一份。
 /// </summary>
-internal static class SpatialState
+internal sealed class SpatialState
 {
-    private static readonly object Gate = new();
+    private readonly object _gate = new();
 
-    private static double _x;
-    private static double _y;
-    private static double _z = AppSettings.SpatialDepth;
+    private double _x;
+    private double _y;
+    private double _z;
+
+    public SpatialState(double x, double y, double z)
+    {
+        _x = Math.Clamp(x, -1, 1);
+        _y = Math.Clamp(y, -1, 1);
+        _z = Math.Clamp(z, 0, 1);
+    }
 
     /// <summary>位置被修改后触发（可能在任意线程）。</summary>
-    public static event Action<SpatialOrigin>? Changed;
+    public event Action<SpatialOrigin>? Changed;
 
-    public static double X
+    public double X
     {
-        get { lock (Gate) { return _x; } }
+        get { lock (_gate) { return _x; } }
     }
 
-    public static double Y
+    public double Y
     {
-        get { lock (Gate) { return _y; } }
+        get { lock (_gate) { return _y; } }
     }
 
-    public static double Z
+    public double Z
     {
-        get { lock (Gate) { return _z; } }
+        get { lock (_gate) { return _z; } }
     }
 
     /// <summary>一次性读取三个维度，供音频线程使用。</summary>
-    public static void Snapshot(out double x, out double y, out double z)
+    public void Snapshot(out double x, out double y, out double z)
     {
-        lock (Gate)
+        lock (_gate)
         {
             x = _x;
             y = _y;
@@ -51,29 +58,22 @@ internal static class SpatialState
     }
 
     /// <summary>更新位置，超出范围的值会被收拢。</summary>
-    public static void Set(double x, double y, double z, SpatialOrigin origin)
+    public void Set(double x, double y, double z, SpatialOrigin origin)
     {
         x = Math.Clamp(x, -1, 1);
         y = Math.Clamp(y, -1, 1);
         z = Math.Clamp(z, 0, 1);
 
-        bool depthChanged;
-        lock (Gate)
+        lock (_gate)
         {
             if (x == _x && y == _y && z == _z)
             {
                 return;
             }
 
-            depthChanged = z != _z;
             _x = x;
             _y = y;
             _z = z;
-        }
-
-        if (depthChanged)
-        {
-            AppSettings.SpatialDepth = z;
         }
 
         Changed?.Invoke(origin);

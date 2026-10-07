@@ -9,9 +9,10 @@ using System.Windows.Forms;
 namespace ExplainingStones;
 
 /// <summary>
-/// 桌宠窗体：无边框、置顶、支持逐像素透明与投影阴影，可拖动，单击播放 / 暂停音乐，并带托盘图标。
+/// 单颗石头的桌宠窗体：无边框、置顶、支持逐像素透明与投影阴影，可拖动，
+/// 单击开关这一颗石头的声音（静音时半透明绘制），右键打开应用菜单。
 /// </summary>
-public sealed class PetForm : Form
+internal sealed class PetForm : Form
 {
     // ===== 配置 =====
 
@@ -24,6 +25,9 @@ public sealed class PetForm : Form
     /// <summary>画布四周为阴影预留的留白（物理像素）。</summary>
     private const int ShadowPad = 40;
 
+    /// <summary>静音时桌宠的不透明度。</summary>
+    private const float MutedOpacity = 0.35f;
+
     // ===== Win32 常量 =====
     private const int WS_EX_LAYERED = 0x00080000;
     private const int WM_NCHITTEST = 0x0084;
@@ -33,19 +37,15 @@ public sealed class PetForm : Form
     private const byte AC_SRC_OVER = 0x00;
     private const byte AC_SRC_ALPHA = 0x01;
 
-    private readonly SpatialMusicPlayer _player = new();
+    private readonly Stone _stone;
+    private readonly StoneHost _host;
     private readonly Bitmap? _source;
     private Bitmap? _bitmap;
-    private readonly Icon _appIcon;
-    private readonly NotifyIcon _tray;
 
     private bool _dragging;
     private Point _dragOffset;
     private Point _dragStart;              // 按下位置，用于区分单击与拖动
     private bool _movedFar;                // 按下后是否位移超过阈值
-    private bool _wantPlay;                // 用户是否希望播放
-    private bool _paused;
-    private string? _playingPath;           // 正在播放的曲目路径
     private bool _applyingSpatialMove;     // 面板在移动桌宠时，忽略位置回灌
     private readonly float _dpiScale;      // 系统 DPI 缩放
     private int _contentWidth;             // 内容尺寸（不含阴影留白）
@@ -55,8 +55,11 @@ public sealed class PetForm : Form
     private byte[]? _alphaMask;            // 画布 alpha 掩码，用于透明区鼠标穿透
     private double _lastZ;                 // 上次的远近，用于判断内容是否需要重绘
 
-    public PetForm()
+    public PetForm(Stone stone, StoneHost host)
     {
+        _stone = stone;
+        _host = host;
+
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
@@ -85,18 +88,12 @@ public sealed class PetForm : Form
 
         _bitmap = ComposePet();
         ClientSize = new Size(_canvasWidth, _canvasHeight);
-        _lastZ = SpatialState.Z;
+        _lastZ = stone.State.Z;
 
-        _appIcon = SvgIcons.CreateAppIcon(LogicalToPixels(16));
+        stone.MutedChanged += OnMutedChanged;
+        stone.State.Changed += OnSpatialChanged;
 
-        _tray = BuildTrayIcon();
-
-        AppSettings.PlaylistChanged += OnPlaylistChanged;
-        AppSettings.AudioEffectsChanged += OnAudioEffectsChanged;
-        SpatialState.Changed += OnSpatialChanged;
-        _player.TrackEnded += OnTrackEnded;
-
-        // 初始显示在屏幕右下角（同时会把该位置同步为声源位置）
+        // 默认显示在屏幕右下角（随后由宿主按落盘位置复位）
         var area = Screen.PrimaryScreen!.WorkingArea;
         Location = new Point(area.Right - Width - 40, area.Bottom - Height - 40);
     }
@@ -188,7 +185,7 @@ public sealed class PetForm : Form
     }
 
     /// <summary>把 96 DPI 的逻辑像素换算成当前系统 DPI 下的物理像素。</summary>
-    private static int LogicalToPixels(int logical)
+    internal static int LogicalToPixels(int logical)
     {
         int dpi = GetDpiForSystem();
         if (dpi <= 0)
@@ -223,25 +220,59 @@ public sealed class PetForm : Form
             return null;
         }
 
-        float scale = 1f - 0.5f * (float)SpatialState.Z;
+        float scale = 1f - 0.5f * (float)_stone.State.Z;
         int width = Math.Max(1, (int)Math.Round(_contentWidth * scale));
         int height = Math.Max(1, (int)Math.Round(_contentHeight * scale));
         int x0 = (_canvasWidth - width) / 2;
         int y0 = (_canvasHeight - height) / 2;
 
         var bitmap = new Bitmap(_canvasWidth, _canvasHeight, PixelFormat.Format32bppArgb);
-        using var g = Graphics.FromImage(bitmap);
-        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        using (var g = Graphics.FromImage(bitmap))
+        {
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
-        int blur = Math.Max(1, (int)Math.Round(4 * _dpiScale * scale));
-        int drop = Math.Max(1, (int)Math.Round(6 * _dpiScale * scale));
-        using var shadow = CreateShadow(_source, width, height, blur, 0.6f);
-        g.DrawImage(shadow, new Rectangle(x0, y0 + drop, width, height));
-        g.DrawImage(_source, new Rectangle(x0, y0, width, height));
+            int blur = Math.Max(1, (int)Math.Round(4 * _dpiScale * scale));
+            int drop = Math.Max(1, (int)Math.Round(6 * _dpiScale * scale));
+            using var shadow = CreateShadow(_source, width, height, blur, 0.6f);
+            g.DrawImage(shadow, new Rectangle(x0, y0 + drop, width, height));
+            g.DrawImage(_source, new Rectangle(x0, y0, width, height));
+        }
+
+        if (_stone.Muted)
+        {
+            ApplyOpacity(bitmap, MutedOpacity);
+        }
 
         _alphaMask = ExtractAlpha(bitmap);
         return bitmap;
+    }
+
+    /// <summary>整体缩放位图的 alpha，用于静音时半透明显示。</summary>
+    private static void ApplyOpacity(Bitmap bitmap, float opacity)
+    {
+        var rect = new Rectangle(0, 0, bitmap.Width, bitmap.Height);
+        var data = bitmap.LockBits(rect, ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
+        try
+        {
+            var buffer = new byte[data.Stride * bitmap.Height];
+            Marshal.Copy(data.Scan0, buffer, 0, buffer.Length);
+            for (int y = 0; y < bitmap.Height; y++)
+            {
+                int rowStart = y * data.Stride;
+                for (int x = 0; x < bitmap.Width; x++)
+                {
+                    int offset = rowStart + x * 4 + 3;
+                    buffer[offset] = (byte)(buffer[offset] * opacity);
+                }
+            }
+
+            Marshal.Copy(buffer, 0, data.Scan0, buffer.Length);
+        }
+        finally
+        {
+            bitmap.UnlockBits(data);
+        }
     }
 
     /// <summary>生成黑色剪影模糊阴影。</summary>
@@ -368,29 +399,7 @@ public sealed class PetForm : Form
         }
     }
 
-    // ===== 托盘图标 =====
-
-    private NotifyIcon BuildTrayIcon()
-    {
-        var tray = new NotifyIcon
-        {
-            Text = "Explaining Stones",
-            Visible = true,
-            Icon = _appIcon
-        };
-
-        // 左键 / 右键均弹出现代菜单
-        tray.MouseUp += (_, e) =>
-        {
-            if (e.Button is MouseButtons.Left or MouseButtons.Right)
-            {
-                ShowAppMenu(Cursor.Position);
-            }
-        };
-        return tray;
-    }
-
-    // ===== 交互：拖动 / 单击播放 / 右键菜单 =====
+    // ===== 交互：拖动 / 单击静音 / 右键菜单 =====
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
@@ -428,166 +437,20 @@ public sealed class PetForm : Form
             _dragging = false;
             if (!_movedFar)
             {
-                ToggleMusic();
+                _host.ToggleStoneSound(_stone);
+            }
+            else
+            {
+                _host.PersistStones();   // 拖动结束才落盘，避免拖动过程中频繁写文件
             }
         }
         else if (e.Button == MouseButtons.Right)
         {
-            ShowAppMenu(Cursor.Position);
+            _host.ShowAppMenu(Cursor.Position);
         }
     }
 
-    private void ShowAppMenu(Point anchor)
-    {
-        bool playing = _player.IsOpened && !_paused;
-        FlyoutMenu.Show(new[]
-        {
-            new FlyoutMenuItem(playing ? "\uE769" : "\uE768", playing ? "暂停音乐" : "播放音乐", ToggleMusic),
-            new FlyoutMenuItem("\uE713", "设置…", WinUiHost.ShowSettings),
-            new FlyoutMenuItem("\uE711", "退出", Close, SeparatorBefore: true),
-        }, anchor);
-    }
-
-    // ===== 音乐 =====
-
-    private void StartMusic()
-    {
-        if (AppSettings.Current is null)
-        {
-            MessageBox.Show("播放列表为空，请在托盘菜单中选择“设置…”添加音乐。", Text,
-                MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
-        }
-
-        PlayCurrent();
-    }
-
-    /// <summary>播放列表中的当前曲目。</summary>
-    private void PlayCurrent()
-    {
-        PlaylistItem? item = AppSettings.Current;
-        if (item is null)
-        {
-            _player.Close();
-            _wantPlay = false;
-            _playingPath = null;
-            return;
-        }
-
-        if (!File.Exists(item.Path))
-        {
-            MessageBox.Show($"未找到音乐文件：\n{item.Path}\n\n请在托盘菜单中选择“设置…”。", Text,
-                MessageBoxButtons.OK, MessageBoxIcon.Information);
-            _wantPlay = false;
-            return;
-        }
-
-        _paused = false;
-        _wantPlay = _player.Play(item.Path, item.Loop);
-        if (!_wantPlay)
-        {
-            MessageBox.Show("音乐播放失败，请确认文件格式是否受支持（mp3 / wav）。", Text);
-            return;
-        }
-
-        _playingPath = item.Path;
-        ApplyAudioEffects();
-    }
-
-    /// <summary>当前曲目播完：切到列表中的下一首。</summary>
-    private void OnTrackEnded()
-    {
-        if (!IsHandleCreated)
-        {
-            return;
-        }
-
-        BeginInvoke(new Action(() =>
-        {
-            if (!_wantPlay)
-            {
-                return;
-            }
-
-            AppSettings.CurrentIndex += 1;   // 到列表末尾后回到第一首
-            PlayCurrent();
-        }));
-    }
-
-    /// <summary>把音效开关同步到播放器。</summary>
-    private void ApplyAudioEffects()
-    {
-        _player.HissEnabled = AppSettings.HissEnabled;
-        _player.CrackleEnabled = AppSettings.CrackleEnabled;
-        _player.StereoEnabled = AppSettings.StereoEnabled;
-    }
-
-    private void ToggleMusic()
-    {
-        if (!_player.IsOpened)
-        {
-            StartMusic();
-            return;
-        }
-
-        if (_paused)
-        {
-            _player.Resume();
-            _paused = false;
-        }
-        else
-        {
-            _player.Pause();
-            _paused = true;
-        }
-    }
-
-    /// <summary>设置窗口改了播放列表：正在播放的曲目被删除或替换时跟随更新。</summary>
-    private void OnPlaylistChanged()
-    {
-        if (!IsHandleCreated)
-        {
-            return;
-        }
-
-        BeginInvoke(new Action(() =>
-        {
-            if (!_wantPlay)
-            {
-                return;
-            }
-
-            PlaylistItem? item = AppSettings.Current;
-            if (item is null)
-            {
-                _player.Close();
-                _wantPlay = false;
-                _playingPath = null;
-                return;
-            }
-
-            if (item.Path == _playingPath)
-            {
-                _player.Loop = item.Loop;   // 只改了循环标记，无需重播
-                return;
-            }
-
-            PlayCurrent();
-        }));
-    }
-
-    /// <summary>设置窗口改了音效开关，立即生效。</summary>
-    private void OnAudioEffectsChanged()
-    {
-        if (!IsHandleCreated)
-        {
-            return;
-        }
-
-        BeginInvoke(new Action(ApplyAudioEffects));
-    }
-
-    /// <summary>把桌宠在桌面上的位置映射为声源的左右（x）与上下（y）。</summary>
+    /// <summary>把桌宠在桌面上的位置映射为这一颗石头的声源左右（x）与上下（y）。</summary>
     private void SyncSpatialFromLocation()
     {
         if (_applyingSpatialMove)
@@ -598,7 +461,7 @@ public sealed class PetForm : Form
         var area = Screen.PrimaryScreen!.WorkingArea;
         double x = (Left + Width / 2.0 - (area.Left + area.Width / 2.0)) / (area.Width / 2.0);
         double y = (area.Top + area.Height / 2.0 - (Top + Height / 2.0)) / (area.Height / 2.0);
-        SpatialState.Set(x, y, SpatialState.Z, SpatialOrigin.Pet);
+        _stone.State.Set(x, y, _stone.State.Z, SpatialOrigin.Pet);
     }
 
     /// <summary>位置变化：面板改 x/y 时移动桌宠；远近 z 变化时重新缩放桌宠。</summary>
@@ -609,7 +472,7 @@ public sealed class PetForm : Form
             return;
         }
 
-        double z = SpatialState.Z;
+        double z = _stone.State.Z;
         bool zChanged = z != _lastZ;
         _lastZ = z;
 
@@ -622,7 +485,7 @@ public sealed class PetForm : Form
         {
             if (origin == SpatialOrigin.Panel)
             {
-                MoveToSpatialPosition();
+                ApplySpatialPosition();
             }
 
             if (zChanged)
@@ -632,18 +495,30 @@ public sealed class PetForm : Form
         }));
     }
 
-    private void MoveToSpatialPosition()
+    /// <summary>静音状态变化：重绘为半透明 / 恢复正常。</summary>
+    private void OnMutedChanged()
+    {
+        if (!IsHandleCreated)
+        {
+            return;
+        }
+
+        BeginInvoke(new Action(RefreshPetSize));
+    }
+
+    /// <summary>按这一颗石头的 x/y 复位窗口位置（供宿主在显示前调用）。</summary>
+    public void ApplySpatialPosition()
     {
         var area = Screen.PrimaryScreen!.WorkingArea;
-        int centerX = (int)Math.Round(area.Left + area.Width / 2.0 + SpatialState.X * (area.Width / 2.0));
-        int centerY = (int)Math.Round(area.Top + area.Height / 2.0 - SpatialState.Y * (area.Height / 2.0));
+        int centerX = (int)Math.Round(area.Left + area.Width / 2.0 + _stone.State.X * (area.Width / 2.0));
+        int centerY = (int)Math.Round(area.Top + area.Height / 2.0 - _stone.State.Y * (area.Height / 2.0));
 
         _applyingSpatialMove = true;
         Location = new Point(centerX - Width / 2, centerY - Height / 2);
         _applyingSpatialMove = false;
     }
 
-    /// <summary>远近变化时重绘桌宠内容（窗口尺寸不变，透明区域不影响点击）。</summary>
+    /// <summary>远近或静音变化时重绘桌宠内容（窗口尺寸不变，透明区域不影响点击）。</summary>
     private void RefreshPetSize()
     {
         if (_source is null || _bitmap is null)
@@ -659,16 +534,9 @@ public sealed class PetForm : Form
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
-        AppSettings.PlaylistChanged -= OnPlaylistChanged;
-        AppSettings.AudioEffectsChanged -= OnAudioEffectsChanged;
-        SpatialState.Changed -= OnSpatialChanged;
-        _player.TrackEnded -= OnTrackEnded;
+        _stone.MutedChanged -= OnMutedChanged;
+        _stone.State.Changed -= OnSpatialChanged;
 
-        _tray.Visible = false;
-        _tray.Dispose();
-        _appIcon.Dispose();
-
-        _player.Dispose();
         _bitmap?.Dispose();
         _source?.Dispose();
 

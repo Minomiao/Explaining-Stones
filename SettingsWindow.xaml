@@ -79,7 +79,7 @@
                             </Border>
                         </Border>
 
-                        <TextBlock Text="打开文件即加入列表；条目可删除或设为单曲循环。点击桌宠播放 / 暂停。"
+                        <TextBlock Text="打开文件即加入列表；条目可删除或设为单曲循环。单击桌宠开关这一颗石头的声音，播放 / 暂停在托盘菜单。"
                                    Opacity="0.7"
                                    TextWrapping="Wrap" />
                     </StackPanel>
@@ -87,6 +87,13 @@
 
                 <ScrollViewer x:Name="SoundPage" Padding="24" Visibility="Collapsed">
                     <StackPanel Spacing="14">
+                        <!-- 切换当前调整的是哪一颗石头 -->
+                        <StackPanel Orientation="Horizontal" Spacing="4">
+                            <RadioButton x:Name="Stone0Radio" GroupName="StoneSwitch" Content="石头 1" />
+                            <RadioButton x:Name="Stone1Radio" GroupName="StoneSwitch" Content="石头 2" />
+                            <RadioButton x:Name="Stone2Radio" GroupName="StoneSwitch" Content="石头 3" />
+                        </StackPanel>
+
                         <CheckBox x:Name="CrackleCheck">
                             <TextBlock Text="爆豆声" VerticalAlignment="Center" />
                         </CheckBox>

@@ -7,8 +7,8 @@ using System.Windows.Forms;
 
 namespace ExplainingStones;
 
-/// <summary>弹出菜单项：Fluent 图标 + 文本。</summary>
-public readonly record struct FlyoutMenuItem(string Glyph, string Text, Action? Click, bool SeparatorBefore = false);
+/// <summary>弹出菜单项：Fluent 图标 + 文本，可置灰（Enabled=false 时不可点击）。</summary>
+public readonly record struct FlyoutMenuItem(string Glyph, string Text, Action? Click, bool SeparatorBefore = false, bool Enabled = true);
 
 /// <summary>
 /// Windows 11 风格弹出菜单：圆角、跟随系统深浅色、图标 + 文本、悬停高亮，点击外部自动关闭。
@@ -177,6 +177,7 @@ internal sealed class FlyoutMenuWindow : Form
         g.FillRectangle(background, ClientRectangle);
 
         Color text = _dark ? Color.White : Color.FromArgb(27, 27, 27);
+        Color disabled = _dark ? Color.FromArgb(115, 115, 115) : Color.FromArgb(160, 160, 160);
         Color hover = _dark ? Color.FromArgb(61, 61, 61) : Color.FromArgb(233, 233, 233);
         Color separator = _dark ? Color.FromArgb(63, 63, 63) : Color.FromArgb(224, 224, 224);
         int lineInset = P(Edge) / 2;
@@ -200,12 +201,13 @@ internal sealed class FlyoutMenuWindow : Form
             }
 
             var item = _items[_rowItemIndex[row]];
+            Color itemColor = item.Enabled ? text : disabled;
             var iconRect = new Rectangle(bounds.Left + P(HoverInset), bounds.Top, P(IconSlot), bounds.Height);
-            TextRenderer.DrawText(g, item.Glyph, _iconFont, iconRect, text,
+            TextRenderer.DrawText(g, item.Glyph, _iconFont, iconRect, itemColor,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             var textRect = new Rectangle(iconRect.Right + P(IconTextGap), bounds.Top,
                 bounds.Right - iconRect.Right - P(IconTextGap) - P(HoverInset), bounds.Height);
-            TextRenderer.DrawText(g, item.Text, _textFont, textRect, text,
+            TextRenderer.DrawText(g, item.Text, _textFont, textRect, itemColor,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
         }
     }
@@ -235,9 +237,10 @@ internal sealed class FlyoutMenuWindow : Form
     {
         for (int row = 0; row < _rowRects.Count; row++)
         {
-            if (_rowItemIndex[row] >= 0 && _rowRects[row].Contains(point))
+            int item = _rowItemIndex[row];
+            if (item >= 0 && _items[item].Enabled && _rowRects[row].Contains(point))
             {
-                return _rowItemIndex[row];
+                return item;
             }
         }
 

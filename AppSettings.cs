@@ -20,6 +20,9 @@ internal sealed class PlaylistItem
     public bool Loop { get; set; }
 }
 
+/// <summary>一颗石头的落盘状态：声源位置与是否静音。</summary>
+internal readonly record struct StoneSnapshot(double X, double Y, double Z, bool Muted);
+
 /// <summary>
 /// 应用设置：播放列表与音效开关，保存在 %AppData%\ExplainingStones\。
 /// </summary>
@@ -45,8 +48,11 @@ internal static class AppSettings
 
     private static readonly string SpatialFile = Path.Combine(SettingsDirectory, "spatial.txt");
 
+    private static readonly string StonesFile = Path.Combine(SettingsDirectory, "stones.txt");
+
     private static List<PlaylistItem>? _playlist;
     private static int _current;
+    private static List<StoneSnapshot>? _stones;
 
     /// <summary>播放列表被修改后触发（可能在任意线程）。</summary>
     public static event Action? PlaylistChanged;
@@ -200,7 +206,7 @@ internal static class AppSettings
         set => WriteFlag(StereoFile, value);
     }
 
-    /// <summary>声源的远近（0 贴近屏幕平面 ~ 1 最远），默认 0。</summary>
+    /// <summary>新增石头时默认的远近（0 贴近屏幕平面 ~ 1 最远），首次填充时沿用旧值。</summary>
     public static double SpatialDepth
     {
         get
@@ -213,11 +219,81 @@ internal static class AppSettings
 
             return 0;
         }
-        set
+    }
+
+    /// <summary>已落盘的石头状态快照，行数即石头数量（最多三颗）。</summary>
+    public static IReadOnlyList<StoneSnapshot> Stones
+    {
+        get
         {
-            Directory.CreateDirectory(SettingsDirectory);
-            File.WriteAllText(SpatialFile, value.ToString("0.###", CultureInfo.InvariantCulture));
+            lock (Gate)
+            {
+                return LoadStones().ToArray();
+            }
         }
+    }
+
+    /// <summary>落盘石头状态；行数即石头数量。</summary>
+    public static void SaveStones(IReadOnlyList<StoneSnapshot> stones)
+    {
+        lock (Gate)
+        {
+            var list = new List<StoneSnapshot>(stones);
+            while (list.Count > 3)
+            {
+                list.RemoveAt(list.Count - 1);
+            }
+
+            _stones = list;
+            SaveStonesFile();
+        }
+    }
+
+    /// <summary>读取石子列表，无文件时返回空（由宿主决定默认数量）。调用方需持有 Gate。</summary>
+    private static List<StoneSnapshot> LoadStones()
+    {
+        if (_stones is not null)
+        {
+            return _stones;
+        }
+
+        var list = new List<StoneSnapshot>();
+        if (File.Exists(StonesFile))
+        {
+            foreach (string line in File.ReadAllLines(StonesFile))
+            {
+                string[] parts = line.Split('\t');
+                if (parts.Length < 4 ||
+                    !double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double x) ||
+                    !double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double y) ||
+                    !double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double z))
+                {
+                    continue;
+                }
+
+                list.Add(new StoneSnapshot(
+                    Math.Clamp(x, -1, 1), Math.Clamp(y, -1, 1), Math.Clamp(z, 0, 1), parts[3] == "1"));
+            }
+        }
+
+        _stones = list;
+        return list;
+    }
+
+    private static void SaveStonesFile()
+    {
+        Directory.CreateDirectory(SettingsDirectory);
+        var lines = new List<string>(_stones!.Count);
+        foreach (StoneSnapshot stone in _stones)
+        {
+            lines.Add(string.Join('\t',
+                stone.X.ToString("0.###", CultureInfo.InvariantCulture),
+                stone.Y.ToString("0.###", CultureInfo.InvariantCulture),
+                stone.Z.ToString("0.###", CultureInfo.InvariantCulture),
+                stone.Muted ? "1" : "0"));
+        }
+
+        File.WriteAllLines(StonesFile, lines);
     }
 
     /// <summary>读取列表，首次使用时放入内置默认曲目。调用方需持有 Gate。</summary>

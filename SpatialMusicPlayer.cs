@@ -7,18 +7,29 @@ using NAudio.Wave.SampleProviders;
 namespace ExplainingStones;
 
 /// <summary>
-/// 基于 NAudio 的播放器：把音乐与老式播放器噪声混合后，按声源在三维空间中的位置
-/// 做左右等功率声像、双扬声器先后延迟（ITD）与距离衰减，再输出到默认扬声器。
-/// 输出设备只有单声道时会自动降为单声道，保证单扬声器也能正常播放。
+/// 基于 NAudio 的播放器：音乐与老式播放器噪声按石头分为多条支路，各自按该石头的
+/// 三维位置做左右等功率声像、双耳时间差（ITD）与距离衰减，再汇入**单个**输出设备。
+/// 单设备可避免多路输出间的启动偏差造成的回声 / 梳状滤波；单声道设备会自动降混。
 /// </summary>
 internal sealed class SpatialMusicPlayer : IDisposable
 {
+    /// <summary>固定的支路数（最多三颗石头），支路常驻、不随石头增删改变结构。</summary>
+    public const int Slots = 3;
+
+    private readonly SpatialState[] _states;
+    private readonly SpatialSampleProvider?[] _spatial = new SpatialSampleProvider?[Slots];
+    private readonly NoiseSampleProvider?[] _hiss = new NoiseSampleProvider?[Slots];
+    private readonly NoiseSampleProvider?[] _crackle = new NoiseSampleProvider?[Slots];
+    private readonly float[] _levels = new float[Slots];
+
     private IWavePlayer? _output;
     private AudioFileReader? _reader;
     private LoopingSampleProvider? _music;
-    private NoiseSampleProvider? _hiss;
-    private NoiseSampleProvider? _crackle;
-    private SpatialSampleProvider? _spatial;
+
+    public SpatialMusicPlayer(SpatialState[] states)
+    {
+        _states = states;
+    }
 
     /// <summary>当前曲目是否已经打开。</summary>
     public bool IsOpened => _reader is not null;
@@ -41,6 +52,21 @@ internal sealed class SpatialMusicPlayer : IDisposable
         }
     }
 
+    /// <summary>设置某条支路的音量（0 静音 / 不存在，其余按发声石头数归一）。</summary>
+    public void SetStoneLevel(int slot, float level)
+    {
+        if (slot < 0 || slot >= Slots)
+        {
+            return;
+        }
+
+        _levels[slot] = level;
+        if (_spatial[slot] is not null)
+        {
+            _spatial[slot]!.TargetLevel = level;
+        }
+    }
+
     /// <summary>播放指定文件，成功返回 true。</summary>
     public bool Play(string path, bool loop)
     {
@@ -60,27 +86,40 @@ internal sealed class SpatialMusicPlayer : IDisposable
                 chain = new MonoToStereoSampleProvider(chain);
             }
 
-            // 老式播放器：转动不稳导致走音与音量起伏
+            // 老式播放器：转动不稳导致走音与音量起伏；只做一次，三颗石头共享
             chain = new FlutterSampleProvider(chain);
+            var fanOut = new FanOutSampleProvider(chain, Slots);
 
             int rate = reader.WaveFormat.SampleRate;
-            var hiss = new NoiseSampleProvider(rate, 2, NoiseGenerator.CreateHiss(rate));
-            var crackle = new NoiseSampleProvider(rate, 2, NoiseGenerator.CreateCrackle(rate));
-            var mix = new MixingSampleProvider(new ISampleProvider[] { chain, hiss, crackle })
+            var branches = new ISampleProvider[Slots];
+            for (int slot = 0; slot < Slots; slot++)
             {
-                ReadFully = true
-            };
-            var spatial = new SpatialSampleProvider(mix);
+                // 三支路噪声用不同种子，让三颗石头的底噪互不相关
+                var hiss = new NoiseSampleProvider(rate, 2, NoiseGenerator.CreateHiss(rate, 1 + slot * 2));
+                var crackle = new NoiseSampleProvider(rate, 2, NoiseGenerator.CreateCrackle(rate, 2 + slot * 2));
+                var branch = new MixingSampleProvider(new ISampleProvider[] { fanOut, hiss, crackle })
+                {
+                    ReadFully = true
+                };
+
+                var spatial = new SpatialSampleProvider(branch, _states[slot], _levels[slot]);
+                branches[slot] = spatial;
+                _spatial[slot] = spatial;
+                _hiss[slot] = hiss;
+                _crackle[slot] = crackle;
+            }
+
+            var mix = new MixingSampleProvider(branches) { ReadFully = true };
 
             var output = new WaveOutEvent { DesiredLatency = 150 };
             try
             {
-                output.Init(OutputSupportsStereo() ? spatial : new StereoToMonoSampleProvider(spatial));
+                output.Init(OutputSupportsStereo() ? mix : new StereoToMonoSampleProvider(mix));
             }
             catch
             {
                 // 设备实际不接受立体声时退回单声道，保证单扬声器也能播放
-                output.Init(new StereoToMonoSampleProvider(spatial));
+                output.Init(new StereoToMonoSampleProvider(mix));
             }
 
             output.Play();
@@ -88,9 +127,6 @@ internal sealed class SpatialMusicPlayer : IDisposable
 
             _reader = reader;
             _music = music;
-            _hiss = hiss;
-            _crackle = crackle;
-            _spatial = spatial;
             _output = output;
             return true;
         }
@@ -105,28 +141,34 @@ internal sealed class SpatialMusicPlayer : IDisposable
 
     public void Resume() => _output?.Play();
 
-    /// <summary>老式收音机声（嘶嘶底噪）开关。</summary>
+    /// <summary>老式收音机声（嘶嘶底噪）开关，对所有石头生效。</summary>
     public bool HissEnabled
     {
-        get => _hiss?.Enabled ?? false;
+        get => _hiss[0]?.Enabled ?? false;
         set
         {
-            if (_hiss is not null)
+            foreach (NoiseSampleProvider? hiss in _hiss)
             {
-                _hiss.Enabled = value;
+                if (hiss is not null)
+                {
+                    hiss.Enabled = value;
+                }
             }
         }
     }
 
-    /// <summary>爆豆声开关。</summary>
+    /// <summary>爆豆声开关，对所有石头生效。</summary>
     public bool CrackleEnabled
     {
-        get => _crackle?.Enabled ?? false;
+        get => _crackle[0]?.Enabled ?? false;
         set
         {
-            if (_crackle is not null)
+            foreach (NoiseSampleProvider? crackle in _crackle)
             {
-                _crackle.Enabled = value;
+                if (crackle is not null)
+                {
+                    crackle.Enabled = value;
+                }
             }
         }
     }
@@ -147,12 +189,15 @@ internal sealed class SpatialMusicPlayer : IDisposable
     /// <summary>立体声开关，关闭后左右声道相同。</summary>
     public bool StereoEnabled
     {
-        get => _spatial?.Stereo ?? true;
+        get => _spatial[0]?.Stereo ?? true;
         set
         {
-            if (_spatial is not null)
+            foreach (SpatialSampleProvider? spatial in _spatial)
             {
-                _spatial.Stereo = value;
+                if (spatial is not null)
+                {
+                    spatial.Stereo = value;
+                }
             }
         }
     }
@@ -173,9 +218,12 @@ internal sealed class SpatialMusicPlayer : IDisposable
         }
 
         _music = null;
-        _hiss = null;
-        _crackle = null;
-        _spatial = null;
+        for (int slot = 0; slot < Slots; slot++)
+        {
+            _spatial[slot] = null;
+            _hiss[slot] = null;
+            _crackle[slot] = null;
+        }
     }
 
     public void Dispose() => Close();

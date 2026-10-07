@@ -26,6 +26,8 @@ public sealed partial class SettingsWindow : Window
     private const double ViewCenterY = 112;
 
     private bool _syncingSpatial;
+    private int _selectedSlot = -1;
+    private RadioButton[] _stoneRadios = null!;
     private Ellipse _sourceDot = null!;
     private Ellipse _sourceShadow = null!;
     private Line _dropLine = null!;
@@ -54,6 +56,13 @@ public sealed partial class SettingsWindow : Window
             AppWindow.Hide();
         };
 
+        _stoneRadios = new[] { Stone0Radio, Stone1Radio, Stone2Radio };
+        for (int i = 0; i < _stoneRadios.Length; i++)
+        {
+            int slot = i;
+            _stoneRadios[i].Checked += (_, _) => SelectStone(slot);
+        }
+
         BrowseButton.Click += async (_, _) => await BrowseAsync();
         CrackleCheck.Click += (_, _) => AppSettings.CrackleEnabled = CrackleCheck.IsChecked == true;
         HissCheck.Click += (_, _) => AppSettings.HissEnabled = HissCheck.IsChecked == true;
@@ -61,8 +70,8 @@ public sealed partial class SettingsWindow : Window
         XSlider.ValueChanged += (_, _) => PushSpatialFromPanel();
         YSlider.ValueChanged += (_, _) => PushSpatialFromPanel();
         ZSlider.ValueChanged += (_, _) => PushSpatialFromPanel();
-        SpatialState.Changed += OnSpatialStateChanged;
         AppSettings.PlaylistChanged += RefreshPlaylist;
+        StoneHost.StonesChanged += OnStonesChanged;
 
         BuildSpatialView();
     }
@@ -79,9 +88,85 @@ public sealed partial class SettingsWindow : Window
         StereoLabel.Text = stereoSupported ? "立体声" : "立体声：在此设备上不支持";
 
         RefreshPlaylist();
-        SyncSlidersFromState();
+        RefreshStoneSwitch();
         AppWindow.Show();
         Activate();
+    }
+
+    // ===== 石头切换 =====
+
+    /// <summary>当前选中的石头，可能为 null（该槽位已无石头）。</summary>
+    private SpatialState? SelectedState => StoneAt(_selectedSlot)?.State;
+
+    private static Stone? StoneAt(int slot)
+    {
+        foreach (Stone stone in StoneHost.Stones)
+        {
+            if (stone.Slot == slot)
+            {
+                return stone;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>选中某颗石头；不存在的槽位忽略。</summary>
+    private void SelectStone(int slot)
+    {
+        if (slot == _selectedSlot)
+        {
+            return;
+        }
+
+        if (StoneAt(slot) is null)
+        {
+            return;
+        }
+
+        Stone? old = StoneAt(_selectedSlot);
+        if (old is not null)
+        {
+            old.State.Changed -= OnSpatialStateChanged;
+        }
+
+        _selectedSlot = slot;
+
+        Stone? now = StoneAt(slot);
+        if (now is not null)
+        {
+            now.State.Changed += OnSpatialStateChanged;
+        }
+
+        SyncSlidersFromState();
+    }
+
+    /// <summary>按当前石头集合刷新切换按钮：数量之外的置灰，选中项被移除时回退到第一颗。</summary>
+    private void RefreshStoneSwitch()
+    {
+        if (StoneAt(_selectedSlot) is null && StoneHost.Stones.Count > 0)
+        {
+            SelectStone(StoneHost.Stones[0].Slot);
+        }
+
+        for (int slot = 0; slot < _stoneRadios.Length; slot++)
+        {
+            bool exists = StoneAt(slot) is not null;
+            _stoneRadios[slot].IsEnabled = exists;
+            _stoneRadios[slot].IsChecked = slot == _selectedSlot;
+        }
+    }
+
+    private void OnStonesChanged()
+    {
+        if (DispatcherQueue.HasThreadAccess)
+        {
+            RefreshStoneSwitch();
+        }
+        else
+        {
+            DispatcherQueue.TryEnqueue(RefreshStoneSwitch);
+        }
     }
 
     /// <summary>左侧导航切换：在音乐与音效两页之间切换。</summary>
@@ -147,7 +232,7 @@ public sealed partial class SettingsWindow : Window
         return row;
     }
 
-    /// <summary>面板滑块变化：更新声源位置（并让桌宠跟着移动）。</summary>
+    /// <summary>面板滑块变化：更新所选石头的声源位置（并让该石头窗口跟着移动）。</summary>
     private void PushSpatialFromPanel()
     {
         if (_syncingSpatial)
@@ -155,11 +240,11 @@ public sealed partial class SettingsWindow : Window
             return;
         }
 
-        SpatialState.Set(XSlider.Value, YSlider.Value, ZSlider.Value, SpatialOrigin.Panel);
+        SelectedState?.Set(XSlider.Value, YSlider.Value, ZSlider.Value, SpatialOrigin.Panel);
         UpdateSpatialView();
     }
 
-    /// <summary>桌宠被拖动后，回填滑块与示意图。</summary>
+    /// <summary>所选石头被拖动后，回填滑块与示意图。</summary>
     private void OnSpatialStateChanged(SpatialOrigin origin)
     {
         if (origin != SpatialOrigin.Pet)
@@ -179,10 +264,16 @@ public sealed partial class SettingsWindow : Window
 
     private void SyncSlidersFromState()
     {
+        SpatialState? state = SelectedState;
+        if (state is null)
+        {
+            return;
+        }
+
         _syncingSpatial = true;
-        XSlider.Value = SpatialState.X;
-        YSlider.Value = SpatialState.Y;
-        ZSlider.Value = SpatialState.Z;
+        XSlider.Value = state.X;
+        YSlider.Value = state.Y;
+        ZSlider.Value = state.Z;
         _syncingSpatial = false;
         UpdateSpatialView();
     }
@@ -256,12 +347,18 @@ public sealed partial class SettingsWindow : Window
         return collection;
     }
 
-    /// <summary>把声源位置画到三维视图上，并标出它在屏幕平面上的投影。</summary>
+    /// <summary>把所选石头的声源位置画到三维视图上，并标出它在屏幕平面上的投影。</summary>
     private void UpdateSpatialView()
     {
-        double z = SpatialState.Z;
-        Point onPlane = Project(SpatialState.X, SpatialState.Y, 0);
-        Point source = Project(SpatialState.X, SpatialState.Y, z);
+        SpatialState? state = SelectedState;
+        if (state is null)
+        {
+            return;
+        }
+
+        double z = state.Z;
+        Point onPlane = Project(state.X, state.Y, 0);
+        Point source = Project(state.X, state.Y, z);
 
         Canvas.SetLeft(_sourceShadow, onPlane.X - 4);
         Canvas.SetTop(_sourceShadow, onPlane.Y - 4);

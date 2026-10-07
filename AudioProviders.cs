@@ -104,7 +104,52 @@ internal sealed class NoiseSampleProvider : ISampleProvider
 }
 
 /// <summary>
-/// 按声源的三维位置做左右等功率声像、双扬声器先后延迟（ITD）与距离衰减。
+/// 把上游音频读一次后复制给多条支路。每条支路在同一轮里以相同的 count 读取，
+/// 因此只在第一路真正读取上游，其余路复用缓存，避免同一首歌被重复读取。
+/// </summary>
+internal sealed class FanOutSampleProvider : ISampleProvider
+{
+    private readonly ISampleProvider _source;
+    private readonly int _outputs;
+    private float[] _cache = Array.Empty<float>();
+    private int _cached;   // 本轮缓存的有效样本数
+    private int _next;     // 下一个要服务的支路下标
+
+    public FanOutSampleProvider(ISampleProvider source, int outputs)
+    {
+        _source = source;
+        _outputs = outputs;
+    }
+
+    public WaveFormat WaveFormat => _source.WaveFormat;
+
+    public int Read(float[] buffer, int offset, int count)
+    {
+        if (_cache.Length < count)
+        {
+            _cache = new float[count];
+        }
+
+        if (_next == 0)
+        {
+            _cached = _source.Read(_cache, 0, count);
+        }
+
+        int copy = Math.Min(_cached, count);
+        Array.Copy(_cache, 0, buffer, offset, copy);
+
+        if (++_next >= _outputs)
+        {
+            _next = 0;
+        }
+
+        return copy;
+    }
+}
+
+/// <summary>
+/// 按声源的三维位置做左右等功率声像、双扬声器先后延迟（ITD）与距离衰减，
+/// 并把该路音量（用于静音 / 按发声石头数归一）平滑地并入处理循环。
 /// </summary>
 internal sealed class SpatialSampleProvider : ISampleProvider
 {
@@ -112,16 +157,21 @@ internal sealed class SpatialSampleProvider : ISampleProvider
     private const int MaxDelaySamples = 2;   // 双扬声器最大到达时间差约 2ms
 
     private readonly ISampleProvider _source;
+    private readonly SpatialState _state;
     private readonly float[] _lineL;
     private readonly float[] _lineR;
     private int _linePos;
     private float _gainL = 1f;
     private float _gainR = 1f;
     private float _distance = 1f;
+    private float _level;
 
-    public SpatialSampleProvider(ISampleProvider source)
+    public SpatialSampleProvider(ISampleProvider source, SpatialState state, float level)
     {
         _source = source;
+        _state = state;
+        TargetLevel = level;
+        _level = level;
         int length = Math.Max(MaxDelaySamples, source.WaveFormat.SampleRate * MaxDelayMs / 1000);
         _lineL = new float[length];
         _lineR = new float[length];
@@ -132,30 +182,45 @@ internal sealed class SpatialSampleProvider : ISampleProvider
     /// <summary>是否启用立体声处理；关闭后左右声道相同。</summary>
     public bool Stereo { get; set; } = true;
 
+    /// <summary>该路的音量目标，读取时会从当前值平滑过渡过去，避免点击时爆音。</summary>
+    public float TargetLevel { get; set; }
+
     public int Read(float[] buffer, int offset, int count)
     {
         int read = _source.Read(buffer, offset, count);
-        int frames = read / 2;
+
+        // 上游读完时补零并始终返回 count：MixingSampleProvider 在 samplesRead < count 时
+        // 会把该输入永久移除，届时这一路（乃至整颗石头）将再也不会发声。
+        for (int i = offset + read; i < offset + count; i++)
+        {
+            buffer[i] = 0f;
+        }
+
+        int frames = count / 2;
         if (frames == 0)
         {
-            return read;
+            return count;
         }
 
         if (!Stereo)
         {
             // 单声道播放：先合并左右再原样送到两个声道，声像与延迟不再参与
+            float startLevelMono = _level;
             for (int f = 0; f < frames; f++)
             {
                 int i = offset + f * 2;
                 float mono = (buffer[i] + buffer[i + 1]) * 0.5f;
+                float k = (float)f / frames;
+                mono *= startLevelMono + (TargetLevel - startLevelMono) * k;
                 buffer[i] = mono;
                 buffer[i + 1] = mono;
             }
 
-            return read;
+            _level = TargetLevel;
+            return count;
         }
 
-        SpatialState.Snapshot(out double x, out _, out double z);
+        _state.Snapshot(out double x, out _, out double z);
 
         // 等功率声像：x=-1 全左，x=0 居中，x=1 全右
         double t = (x + 1) / 2.0;
@@ -171,6 +236,7 @@ internal sealed class SpatialSampleProvider : ISampleProvider
         float startL = _gainL;
         float startR = _gainR;
         float startDistance = _distance;
+        float startLevel = _level;
 
         for (int f = 0; f < frames; f++)
         {
@@ -197,20 +263,22 @@ internal sealed class SpatialSampleProvider : ISampleProvider
                 _linePos = 0;
             }
 
-            // 逐样本插值，避免拖动位置时出现音量台阶噪声
+            // 逐样本插值，避免拖动位置或点击静音时出现音量台阶噪声
             float k = (float)f / frames;
             float gainL = startL + (targetL - startL) * k;
             float gainR = startR + (targetR - startR) * k;
             float distance = startDistance + (targetDistance - startDistance) * k;
+            float level = startLevel + (TargetLevel - startLevel) * k;
 
-            buffer[i] = _lineL[idxL] * gainL * distance;
-            buffer[i + 1] = _lineR[idxR] * gainR * distance;
+            buffer[i] = _lineL[idxL] * gainL * distance * level;
+            buffer[i + 1] = _lineR[idxR] * gainR * distance * level;
         }
 
         _gainL = targetL;
         _gainR = targetR;
         _distance = targetDistance;
-        return read;
+        _level = TargetLevel;
+        return count;
     }
 }
 
@@ -220,13 +288,13 @@ internal static class NoiseGenerator
     private const float Seconds = 4f;
 
     /// <summary>老式收音机声：低通白噪声的嘶嘶声。</summary>
-    public static float[] CreateHiss(int sampleRate)
+    public static float[] CreateHiss(int sampleRate, int seed)
     {
         int loopCount = (int)(sampleRate * Seconds);
         int fade = sampleRate / 100;              // 10ms 交叉淡化，保证循环处无接缝
         var buffer = new float[loopCount + fade];
 
-        var random = new Random(1);
+        var random = new Random(seed);
         float hissState = 0f;
         for (int i = 0; i < buffer.Length; i++)
         {
@@ -240,13 +308,13 @@ internal static class NoiseGenerator
     }
 
     /// <summary>爆豆声：随机触发、快速衰减的噪声脉冲。</summary>
-    public static float[] CreateCrackle(int sampleRate)
+    public static float[] CreateCrackle(int sampleRate, int seed)
     {
         int loopCount = (int)(sampleRate * Seconds);
         int fade = sampleRate / 100;
         var buffer = new float[loopCount + fade];
 
-        var random = new Random(2);
+        var random = new Random(seed);
         int remaining = 0;
         float gain = 0f;
         for (int i = 0; i < buffer.Length; i++)

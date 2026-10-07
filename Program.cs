@@ -21,6 +21,6 @@ internal static class Program
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
-        Application.Run(new PetForm());
+        Application.Run(new StoneHost());
     }
 }
