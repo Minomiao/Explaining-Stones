@@ -36,7 +36,7 @@ dotnet build ExplainingStones.csproj -c Release
 
 ## 音乐
 
-首次运行使用内置的 `theme.mp3`（原创，无第三方素材）。可在设置面板中换成任意本地文件，支持 mp3 / wav / m4a / flac。
+首次运行使用内置的 `theme.mp3`。可在设置面板中换成任意本地文件，支持 mp3 / wav / m4a / flac。
 
 ## 配置
 
