@@ -14,7 +14,14 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- exe 图标，由 Assets/icons/app.svg 渲染生成 -->
     <ApplicationIcon>Stone.ico</ApplicationIcon>
-    <WindowsPackageType>None</WindowsPackageType>
+    <!-- 默认以非打包方式运行，便于开发调试；生成商店包时传 -p:Packaged=true -->
+    <WindowsPackageType Condition="'$(Packaged)' != 'true'">None</WindowsPackageType>
+    <!-- 启用 MSIX 打包工具链（清单设计器与打包目标），仅打包时需要 -->
+    <EnableMsixTooling Condition="'$(Packaged)' == 'true'">true</EnableMsixTooling>
+    <!-- 商店提交不需要符号包；生成符号包依赖 VS 的 mspdbcmf.exe，缺失会导致打包报错 -->
+    <AppxSymbolPackageEnabled Condition="'$(Packaged)' == 'true'">false</AppxSymbolPackageEnabled>
+    <!-- 包资源默认语言设为中文，使清单声明 zh-CN 而非默认的 en-US -->
+    <DefaultLanguage Condition="'$(Packaged)' == 'true'">zh-CN</DefaultLanguage>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <!-- 入口点由 Program.Main 提供（WinForms 消息循环），禁用 XAML 生成的 Main -->
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
@@ -34,11 +41,22 @@
     <EmbeddedResource Include="Assets\icons\*.svg" />
   </ItemGroup>
 
+  <ItemGroup Condition="'$(Packaged)' == 'true'">
+    <!-- MSIX 包清单：磁贴与启动图资源由 Assets/icons/app.svg 渲染生成 -->
+    <AppxManifest Include="Package.appxmanifest">
+      <SubType>Designer</SubType>
+    </AppxManifest>
+  </ItemGroup>
+
   <ItemGroup>
     <None Update="Stone.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Update="theme.mp3">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <!-- MSIX 清单引用的磁贴 / 启动图，需随输出一并打包 -->
+    <None Update="Assets\*.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>

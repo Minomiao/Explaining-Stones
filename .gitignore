@@ -2,6 +2,15 @@
 bin/
 obj/
 
+# MSIX 打包产物
+AppPackages/
+BundleArtifacts/
+
+# 商店身份与签名相关，含 Publisher GUID 等，不入库
+Package.appxmanifest
+Package.StoreAssociation.xml
+*.pfx
+
 # IDE 本地状态
 .vs/
 .trae/
