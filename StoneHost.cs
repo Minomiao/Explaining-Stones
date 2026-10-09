@@ -104,6 +104,7 @@ internal sealed class StoneHost : ApplicationContext
         _tray = BuildTrayIcon();
 
         AppSettings.PlaylistChanged += OnPlaylistChanged;
+        AppSettings.TrackRequested += OnTrackRequested;
         AppSettings.AudioEffectsChanged += OnAudioEffectsChanged;
 
         PublishStones();
@@ -372,12 +373,38 @@ internal sealed class StoneHost : ApplicationContext
     /// <summary>设置窗口改了音效开关，立即生效。</summary>
     private void OnAudioEffectsChanged() => Post(ApplyAudioEffects);
 
+    /// <summary>用户点击播放列表条目：切到该曲并播放（点当前曲目则恢复播放，不重头）。</summary>
+    private void OnTrackRequested(int index) => Post(() =>
+    {
+        PlaylistItem? item = AppSettings.Current;
+        if (item is null)
+        {
+            return;
+        }
+
+        if (item.Path == _playingPath && _player.IsOpened)
+        {
+            _player.Loop = item.Loop;
+            if (_paused)
+            {
+                _player.Resume();
+                _paused = false;
+            }
+
+            return;
+        }
+
+        _wantPlay = true;
+        PlayCurrent();
+    });
+
     /// <summary>切回 UI 线程执行（音频线程与 WinUI 线程都会调用到这里）。</summary>
     private void Post(Action action) => _marshal.BeginInvoke(action);
 
     protected override void ExitThreadCore()
     {
         AppSettings.PlaylistChanged -= OnPlaylistChanged;
+        AppSettings.TrackRequested -= OnTrackRequested;
         AppSettings.AudioEffectsChanged -= OnAudioEffectsChanged;
         _player.TrackEnded -= OnTrackEnded;
         _player.Dispose();

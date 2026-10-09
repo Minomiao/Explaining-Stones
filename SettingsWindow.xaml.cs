@@ -71,6 +71,7 @@ public sealed partial class SettingsWindow : Window
         YSlider.ValueChanged += (_, _) => PushSpatialFromPanel();
         ZSlider.ValueChanged += (_, _) => PushSpatialFromPanel();
         AppSettings.PlaylistChanged += RefreshPlaylist;
+        AppSettings.TrackRequested += OnTrackRequested;
         StoneHost.StonesChanged += OnStonesChanged;
 
         BuildSpatialView();
@@ -196,6 +197,19 @@ public sealed partial class SettingsWindow : Window
         }
     }
 
+    /// <summary>切换当前曲目后刷新列表（高亮移到新的当前项）。</summary>
+    private void OnTrackRequested(int index)
+    {
+        if (DispatcherQueue.HasThreadAccess)
+        {
+            RefreshPlaylist();
+        }
+        else
+        {
+            DispatcherQueue.TryEnqueue(RefreshPlaylist);
+        }
+    }
+
     private FrameworkElement BuildPlaylistRow(int index, PlaylistItem item, bool current)
     {
         var row = new Grid { ColumnSpacing = 8 };
@@ -210,8 +224,21 @@ public sealed partial class SettingsWindow : Window
             TextTrimming = TextTrimming.CharacterEllipsis,
             FontWeight = current ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal
         };
-        ToolTipService.SetToolTip(name, item.Path);
-        row.Children.Add(name);
+
+        // 条目本身是按钮：点击切到该曲并播放
+        var play = new Button
+        {
+            Content = name,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(8, 6, 8, 6)
+        };
+        ToolTipService.SetToolTip(play, item.Path);
+        play.Click += (_, _) => AppSettings.RequestTrack(index);
+        row.Children.Add(play);
 
         var loop = new ToggleButton
         {

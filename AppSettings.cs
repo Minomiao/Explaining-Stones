@@ -57,6 +57,9 @@ internal static class AppSettings
     /// <summary>播放列表被修改后触发（可能在任意线程）。</summary>
     public static event Action? PlaylistChanged;
 
+    /// <summary>请求切到某一曲并播放（点击条目、或对某曲开启单曲循环时触发）。</summary>
+    public static event Action<int>? TrackRequested;
+
     /// <summary>音效开关被修改后触发（可能在任意线程）。</summary>
     public static event Action? AudioEffectsChanged;
 
@@ -110,6 +113,13 @@ internal static class AppSettings
                 return list.Count == 0 ? null : list[_current];
             }
         }
+    }
+
+    /// <summary>把当前曲目切到指定下标并请求播放（播放列表条目的点击入口）。</summary>
+    public static void RequestTrack(int index)
+    {
+        CurrentIndex = index;
+        TrackRequested?.Invoke(index);
     }
 
     /// <summary>把音乐文件加入列表末尾。</summary>
@@ -180,6 +190,13 @@ internal static class AppSettings
             }
 
             SavePlaylist();
+
+            // 开启单曲循环时把当前曲目切到这一首，播放器随之切歌
+            if (loop)
+            {
+                _current = index;
+                File.WriteAllText(CurrentFile, _current.ToString(CultureInfo.InvariantCulture));
+            }
         }
 
         PlaylistChanged?.Invoke();
