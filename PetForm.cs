@@ -16,9 +16,6 @@ internal sealed class PetForm : Form
 {
     // ===== 配置 =====
 
-    /// <summary>桌宠图片路径（编译后会复制到输出目录，优先使用输出目录中的图片）。</summary>
-    private const string ImageFile = @"D:\codes\Explaining Stones\Stone.png";
-
     /// <summary>桌宠显示的最大边长（96 DPI 下的逻辑像素，实际渲染时按屏幕 DPI 放大）。</summary>
     private const int PetSize = 180;
 
@@ -199,10 +196,6 @@ internal sealed class PetForm : Form
     private static Bitmap? LoadSourceImage()
     {
         string path = Path.Combine(AppContext.BaseDirectory, "Stone.png");
-        if (!File.Exists(path))
-        {
-            path = ImageFile;
-        }
         if (!File.Exists(path))
         {
             return null;

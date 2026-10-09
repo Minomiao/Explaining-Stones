@@ -49,14 +49,17 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Update="Stone.png">
+    <!-- Stone.png 与磁贴图会被 WinUI 目标隐式归为 Content，必须显式声明随发布输出。
+         只写 CopyToOutputDirectory 的话 build 有、publish 没有，免安装版会缺图 -->
+    <Content Update="Stone.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Update="Assets\*.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
     <None Update="theme.mp3">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <!-- MSIX 清单引用的磁贴 / 启动图，需随输出一并打包 -->
-    <None Update="Assets\*.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
