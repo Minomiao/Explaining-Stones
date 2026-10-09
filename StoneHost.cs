@@ -26,6 +26,9 @@ internal sealed class StoneHost : ApplicationContext
     private static readonly object Gate = new();
     private static Stone[] _snapshot = Array.Empty<Stone>();
 
+    /// <summary>当前应用宿主实例，供设置窗口增删石头。</summary>
+    public static StoneHost? Current { get; private set; }
+
     /// <summary>当前石头集合的快照（按槽位顺序）。</summary>
     public static IReadOnlyList<Stone> Stones
     {
@@ -55,6 +58,8 @@ internal sealed class StoneHost : ApplicationContext
 
     public StoneHost()
     {
+        Current = this;
+
         double defaultDepth = AppSettings.SpatialDepth;
         IReadOnlyList<StoneSnapshot> saved = AppSettings.Stones;
 
@@ -120,6 +125,17 @@ internal sealed class StoneHost : ApplicationContext
     /// <summary>移除最后一颗石头（最少保留一颗）。</summary>
     public void RemoveStone() => RemoveStoneInternal();
 
+    /// <summary>移除指定的那一颗石头（最少保留一颗）。</summary>
+    public void RemoveStone(Stone stone)
+    {
+        if (_stones.Count <= 1 || !_stones.Contains(stone))
+        {
+            return;
+        }
+
+        RemoveStoneCore(stone);
+    }
+
     /// <summary>开关某颗石头的声音（左键点击桌宠）。</summary>
     public void ToggleStoneSound(Stone stone)
     {
@@ -140,7 +156,18 @@ internal sealed class StoneHost : ApplicationContext
             return;
         }
 
-        int slot = _stones.Count;
+        // 取第一个空闲槽位：移除中间某颗石头后会留下空槽，直接用 Count 会撞上已有槽位
+        int slot = 0;
+        while (slot < MaxStones && _stones.Any(s => s.Slot == slot))
+        {
+            slot++;
+        }
+
+        if (slot >= MaxStones)
+        {
+            return;
+        }
+
         SpatialState state = _slots[slot];
         state.Set(DefaultPosition[slot].X, DefaultPosition[slot].Y, AppSettings.SpatialDepth, SpatialOrigin.Panel);
 
@@ -165,8 +192,13 @@ internal sealed class StoneHost : ApplicationContext
             return;
         }
 
-        Stone stone = _stones[^1];
-        _stones.RemoveAt(_stones.Count - 1);
+        RemoveStoneCore(_stones[^1]);
+    }
+
+    /// <summary>移除给定的石头：关窗、解除事件、落盘并刷新音量。</summary>
+    private void RemoveStoneCore(Stone stone)
+    {
+        _stones.Remove(stone);
         stone.State.Changed -= OnStoneSpatialChanged;
         if (_forms.Remove(stone, out PetForm? form))
         {
@@ -243,7 +275,7 @@ internal sealed class StoneHost : ApplicationContext
         return tray;
     }
 
-    /// <summary>弹出应用菜单（托盘或右键桌宠）。</summary>
+    /// <summary>弹出托盘应用菜单（托盘图标）。</summary>
     public void ShowAppMenu(Point anchor)
     {
         bool playing = _player.IsOpened && !_paused;
@@ -255,6 +287,23 @@ internal sealed class StoneHost : ApplicationContext
             new FlyoutMenuItem("\uE713", "设置…", WinUiHost.ShowSettings, SeparatorBefore: true),
             new FlyoutMenuItem("\uE711", "退出", ExitThread, SeparatorBefore: true),
         }, anchor);
+    }
+
+    /// <summary>桌宠右键菜单：打开界面、移除这一颗石头（仅剩一颗时不显示）、关闭。</summary>
+    public void ShowStoneMenu(Stone stone, Point anchor)
+    {
+        var items = new List<FlyoutMenuItem>
+        {
+            new FlyoutMenuItem("\uE713", "打开界面", WinUiHost.ShowSettings),
+        };
+
+        if (_stones.Count > 1 && _stones.Contains(stone))
+        {
+            items.Add(new FlyoutMenuItem("\uE738", "移除石头", () => RemoveStone(stone)));
+        }
+
+        items.Add(new FlyoutMenuItem("\uE711", "关闭", ExitThread, SeparatorBefore: true));
+        FlyoutMenu.Show(items, anchor);
     }
 
     // ===== 音乐 =====

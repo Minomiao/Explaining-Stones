@@ -41,6 +41,11 @@
                         <FontIcon Glyph="&#xE8D6;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
+                <NavigationViewItem Content="石头" Tag="stone">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE7F4;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
                 <NavigationViewItem Content="音效" Tag="sound">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE767;" />
@@ -85,14 +90,44 @@
                     </StackPanel>
                 </ScrollViewer>
 
+                <ScrollViewer x:Name="StonePage" Padding="24" Visibility="Collapsed">
+                    <StackPanel Spacing="14">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <FontIcon Glyph="&#xE7F4;" FontSize="16" />
+                            <TextBlock Text="石头位置" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        </StackPanel>
+
+                        <!-- 只读二维视图：三颗石头同处一屏，圆点是位置，旁边是名称标签 -->
+                        <Border HorizontalAlignment="Left"
+                                BorderThickness="1"
+                                BorderBrush="Gray"
+                                CornerRadius="6">
+                            <Canvas x:Name="StoneMap" Width="460" Height="200" />
+                        </Border>
+
+                        <Grid Margin="0,4,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="石头列表" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <Button x:Name="StonePageAddButton" Grid.Column="1" MinWidth="96">
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <FontIcon Glyph="&#xE710;" FontSize="14" />
+                                    <TextBlock Text="添加石头" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+
+                        <!-- 条目：名称、静音状态、静音开关、移除 -->
+                        <StackPanel x:Name="StoneListPanel" Spacing="6" />
+                    </StackPanel>
+                </ScrollViewer>
+
                 <ScrollViewer x:Name="SoundPage" Padding="24" Visibility="Collapsed">
                     <StackPanel Spacing="14">
-                        <!-- 切换当前调整的是哪一颗石头 -->
-                        <StackPanel Orientation="Horizontal" Spacing="4">
-                            <RadioButton x:Name="Stone0Radio" GroupName="StoneSwitch" Content="石头 1" />
-                            <RadioButton x:Name="Stone1Radio" GroupName="StoneSwitch" Content="石头 2" />
-                            <RadioButton x:Name="Stone2Radio" GroupName="StoneSwitch" Content="石头 3" />
-                        </StackPanel>
+                        <!-- 石头选择器：只列出现有石头，末尾是「＋」添加（满三颗置灰），代码动态生成 -->
+                        <StackPanel x:Name="StoneSelectorPanel" Orientation="Horizontal" Spacing="4" />
 
                         <CheckBox x:Name="CrackleCheck">
                             <TextBlock Text="爆豆声" VerticalAlignment="Center" />

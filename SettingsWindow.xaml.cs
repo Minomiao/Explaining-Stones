@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
@@ -15,8 +16,8 @@ using WinRT.Interop;
 namespace ExplainingStones;
 
 /// <summary>
-/// WinUI 3 设置窗口：左侧导航分为「音乐」与「音效」两页。
-/// 音乐页维护播放列表，改动立即生效。
+/// WinUI 3 设置窗口：左侧导航分为「音乐」「石头」「音效」三页。
+/// 音乐页维护播放列表，石头页管理石头（只读位置视图 + 条目列表），音效页调整声源位置与音效开关。
 /// </summary>
 public sealed partial class SettingsWindow : Window
 {
@@ -25,12 +26,20 @@ public sealed partial class SettingsWindow : Window
     private const double ViewCenterX = 130;
     private const double ViewCenterY = 112;
 
+    // 石头页只读二维视图的画布尺寸与留白
+    private const double MapWidth = 460;
+    private const double MapHeight = 200;
+    private const double MapPad = 28;
+
     private bool _syncingSpatial;
     private int _selectedSlot = -1;
-    private RadioButton[] _stoneRadios = null!;
+    private readonly List<(int Slot, ToggleButton Button)> _stoneButtons = new();
     private Ellipse _sourceDot = null!;
     private Ellipse _sourceShadow = null!;
     private Line _dropLine = null!;
+
+    // 石头页当前已订阅状态变化的石头，重建列表时先退订
+    private readonly List<Stone> _subscribedStones = new();
 
     public SettingsWindow()
     {
@@ -56,14 +65,8 @@ public sealed partial class SettingsWindow : Window
             AppWindow.Hide();
         };
 
-        _stoneRadios = new[] { Stone0Radio, Stone1Radio, Stone2Radio };
-        for (int i = 0; i < _stoneRadios.Length; i++)
-        {
-            int slot = i;
-            _stoneRadios[i].Checked += (_, _) => SelectStone(slot);
-        }
-
         BrowseButton.Click += async (_, _) => await BrowseAsync();
+        StonePageAddButton.Click += (_, _) => StoneHost.Current?.AddStone();
         CrackleCheck.Click += (_, _) => AppSettings.CrackleEnabled = CrackleCheck.IsChecked == true;
         HissCheck.Click += (_, _) => AppSettings.HissEnabled = HissCheck.IsChecked == true;
         StereoCheck.Click += (_, _) => AppSettings.StereoEnabled = StereoCheck.IsChecked == true;
@@ -75,6 +78,8 @@ public sealed partial class SettingsWindow : Window
         StoneHost.StonesChanged += OnStonesChanged;
 
         BuildSpatialView();
+        RefreshStoneSelection();
+        RebuildStonePage();
     }
 
     public void Show()
@@ -89,7 +94,9 @@ public sealed partial class SettingsWindow : Window
         StereoLabel.Text = stereoSupported ? "立体声" : "立体声：在此设备上不支持";
 
         RefreshPlaylist();
-        RefreshStoneSwitch();
+        RefreshStoneSelection();
+        RefreshStoneAddButton();
+        RebuildStonePage();
         AppWindow.Show();
         Activate();
     }
@@ -142,40 +149,208 @@ public sealed partial class SettingsWindow : Window
         SyncSlidersFromState();
     }
 
-    /// <summary>按当前石头集合刷新切换按钮：数量之外的置灰，选中项被移除时回退到第一颗。</summary>
-    private void RefreshStoneSwitch()
+    /// <summary>按槽位排序的现有石头（展示顺序即命名顺序）。</summary>
+    private static List<Stone> OrderedStones() => StoneHost.Stones.OrderBy(s => s.Slot).ToList();
+
+    /// <summary>重建石头选择器：只列出现有石头，末尾是「＋」添加，满三颗时「＋」置灰。</summary>
+    private void RefreshStoneSelection()
     {
-        if (StoneAt(_selectedSlot) is null && StoneHost.Stones.Count > 0)
+        List<Stone> stones = OrderedStones();
+        if (StoneAt(_selectedSlot) is null && stones.Count > 0)
         {
-            SelectStone(StoneHost.Stones[0].Slot);
+            SelectStone(stones[0].Slot);
         }
 
-        for (int slot = 0; slot < _stoneRadios.Length; slot++)
+        StoneSelectorPanel.Children.Clear();
+        _stoneButtons.Clear();
+
+        for (int i = 0; i < stones.Count; i++)
         {
-            bool exists = StoneAt(slot) is not null;
-            _stoneRadios[slot].IsEnabled = exists;
-            _stoneRadios[slot].IsChecked = slot == _selectedSlot;
+            Stone stone = stones[i];
+            int slot = stone.Slot;
+            var button = new ToggleButton { Content = $"石头 {i + 1}" };
+            button.Click += (_, _) =>
+            {
+                SelectStone(slot);
+                SyncStoneButtons();
+            };
+
+            // 右键删除：仅一颗时不提供该选项
+            if (stones.Count > 1)
+            {
+                var deleteItem = new MenuFlyoutItem { Text = "删除石头" };
+                deleteItem.Click += (_, _) => StoneHost.Current?.RemoveStone(stone);
+                var flyout = new MenuFlyout();
+                flyout.Items.Add(deleteItem);
+                button.ContextFlyout = flyout;
+            }
+
+            _stoneButtons.Add((slot, button));
+            StoneSelectorPanel.Children.Add(button);
+        }
+
+        var add = new Button
+        {
+            Content = new FontIcon { Glyph = "\uE710", FontSize = 14 },
+            IsEnabled = stones.Count < StoneHost.MaxStones
+        };
+        ToolTipService.SetToolTip(add, "添加石头");
+        add.Click += (_, _) => StoneHost.Current?.AddStone();
+        StoneSelectorPanel.Children.Add(add);
+
+        SyncStoneButtons();
+    }
+
+    /// <summary>让选择器的高亮与当前选中的石头一致。</summary>
+    private void SyncStoneButtons()
+    {
+        foreach ((int slot, ToggleButton button) in _stoneButtons)
+        {
+            button.IsChecked = slot == _selectedSlot;
         }
     }
 
     private void OnStonesChanged()
     {
-        if (DispatcherQueue.HasThreadAccess)
+        // 统一排队处理：避免在按钮点击 / 事件回调过程中就地移除控件
+        DispatcherQueue.TryEnqueue(() =>
         {
-            RefreshStoneSwitch();
+            RefreshStoneSelection();
+            RefreshStoneAddButton();
+            RebuildStonePage();
+        });
+    }
+
+    /// <summary>石头数量到上限时置灰石头页的添加按钮。</summary>
+    private void RefreshStoneAddButton()
+    {
+        StonePageAddButton.IsEnabled = StoneHost.Stones.Count < StoneHost.MaxStones;
+    }
+
+    // ===== 石头页：只读位置视图 + 条目列表 =====
+
+    /// <summary>重建石头条目列表与位置视图，并重新订阅各石头的状态变化。</summary>
+    private void RebuildStonePage()
+    {
+        foreach (Stone stone in _subscribedStones)
+        {
+            stone.State.Changed -= OnStoneMapStateChanged;
+            stone.MutedChanged -= OnStoneMutedChanged;
         }
-        else
+
+        _subscribedStones.Clear();
+        StoneListPanel.Children.Clear();
+
+        List<Stone> stones = OrderedStones();
+        bool canRemove = stones.Count > 1;
+        for (int i = 0; i < stones.Count; i++)
         {
-            DispatcherQueue.TryEnqueue(RefreshStoneSwitch);
+            Stone stone = stones[i];
+            stone.State.Changed += OnStoneMapStateChanged;
+            stone.MutedChanged += OnStoneMutedChanged;
+            _subscribedStones.Add(stone);
+            StoneListPanel.Children.Add(BuildStoneRow(stone, i + 1, canRemove));
+        }
+
+        UpdateStoneMap(stones);
+    }
+
+    /// <summary>构建一条石头条目：名称 + 静音状态 + 静音开关 + 移除。</summary>
+    private FrameworkElement BuildStoneRow(Stone stone, int index, bool canRemove)
+    {
+        var row = new Grid { ColumnSpacing = 8 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var name = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        name.Children.Add(new TextBlock { Text = $"石头 {index}", VerticalAlignment = VerticalAlignment.Center });
+        if (stone.Muted)
+        {
+            name.Children.Add(new TextBlock { Text = "已静音", Opacity = 0.55, VerticalAlignment = VerticalAlignment.Center });
+        }
+
+        row.Children.Add(name);
+
+        var mute = new ToggleButton
+        {
+            IsChecked = stone.Muted,
+            Content = new FontIcon { Glyph = stone.Muted ? "\uE74F" : "\uE767", FontSize = 14 }
+        };
+        ToolTipService.SetToolTip(mute, "静音 / 取消静音");
+        mute.Click += (_, _) => StoneHost.Current?.ToggleStoneSound(stone);
+        Grid.SetColumn(mute, 1);
+        row.Children.Add(mute);
+
+        var remove = new Button
+        {
+            Content = new FontIcon { Glyph = "\uE738", FontSize = 14 },
+            IsEnabled = canRemove
+        };
+        ToolTipService.SetToolTip(remove, canRemove ? "移除这颗石头" : "至少保留一颗石头");
+        remove.Click += (_, _) => StoneHost.Current?.RemoveStone(stone);
+        Grid.SetColumn(remove, 2);
+        row.Children.Add(remove);
+
+        return row;
+    }
+
+    /// <summary>把三颗石头画到只读二维视图：圆点是位置，旁边是名称标签。</summary>
+    private void UpdateStoneMap(List<Stone> stones)
+    {
+        StoneMap.Children.Clear();
+
+        var grid = new SolidColorBrush(Color.FromArgb(45, 128, 128, 128));
+        var dot = new SolidColorBrush(Color.FromArgb(255, 76, 110, 145));
+        var dotMuted = new SolidColorBrush(Color.FromArgb(110, 76, 110, 145));
+
+        StoneMap.Children.Add(new Line { X1 = 0, Y1 = MapHeight / 2, X2 = MapWidth, Y2 = MapHeight / 2, Stroke = grid, StrokeThickness = 1 });
+        StoneMap.Children.Add(new Line { X1 = MapWidth / 2, Y1 = 0, X2 = MapWidth / 2, Y2 = MapHeight, Stroke = grid, StrokeThickness = 1 });
+
+        double scaleX = (MapWidth - MapPad * 2) / 2;
+        double scaleY = (MapHeight - MapPad * 2) / 2;
+
+        for (int i = 0; i < stones.Count; i++)
+        {
+            Stone stone = stones[i];
+            double px = MapWidth / 2 + stone.State.X * scaleX;
+            double py = MapHeight / 2 - stone.State.Y * scaleY;
+
+            const double size = 14;
+            var point = new Ellipse { Width = size, Height = size, Fill = stone.Muted ? dotMuted : dot };
+            Canvas.SetLeft(point, px - size / 2);
+            Canvas.SetTop(point, py - size / 2);
+            StoneMap.Children.Add(point);
+
+            var label = new TextBlock
+            {
+                Text = $"石头 {i + 1}",
+                Opacity = stone.Muted ? 0.45 : 0.9
+            };
+            Canvas.SetLeft(label, px - 22);
+            Canvas.SetTop(label, py - 26);
+            StoneMap.Children.Add(label);
         }
     }
 
-    /// <summary>左侧导航切换：在音乐与音效两页之间切换。</summary>
+    /// <summary>任一石头位置变化（桌面拖动或音效页滑块）：刷新二维视图。</summary>
+    private void OnStoneMapStateChanged(SpatialOrigin origin) => DispatcherQueue.TryEnqueue(() => UpdateStoneMap(OrderedStones()));
+
+    /// <summary>任一石头静音状态变化：重建条目与视图。</summary>
+    private void OnStoneMutedChanged() => DispatcherQueue.TryEnqueue(RebuildStonePage);
+
+    /// <summary>左侧导航切换：在音乐、石头与音效三页之间切换。</summary>
     private void OnNavSelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
-        bool music = (args.SelectedItem as NavigationViewItem)?.Tag as string == "music";
-        MusicPage.Visibility = music ? Visibility.Visible : Visibility.Collapsed;
-        SoundPage.Visibility = music ? Visibility.Collapsed : Visibility.Visible;
+        string? tag = (args.SelectedItem as NavigationViewItem)?.Tag as string;
+        MusicPage.Visibility = tag == "music" ? Visibility.Visible : Visibility.Collapsed;
+        StonePage.Visibility = tag == "stone" ? Visibility.Visible : Visibility.Collapsed;
+        SoundPage.Visibility = tag == "sound" ? Visibility.Visible : Visibility.Collapsed;
     }
 
     /// <summary>重建播放列表，当前曲目加粗显示。</summary>

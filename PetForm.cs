@@ -444,7 +444,7 @@ internal sealed class PetForm : Form
         }
         else if (e.Button == MouseButtons.Right)
         {
-            _host.ShowAppMenu(Cursor.Position);
+            _host.ShowStoneMenu(_stone, Cursor.Position);
         }
     }
 
