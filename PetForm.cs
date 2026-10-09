@@ -19,7 +19,7 @@ internal sealed class PetForm : Form
     /// <summary>桌宠显示的最大边长（96 DPI 下的逻辑像素，实际渲染时按屏幕 DPI 放大）。</summary>
     private const int PetSize = 180;
 
-    /// <summary>画布四周为阴影预留的留白（物理像素）。</summary>
+    /// <summary>画布四周为阴影预留的留白（96 DPI 逻辑像素，实际按屏幕 DPI 放大）。</summary>
     private const int ShadowPad = 40;
 
     /// <summary>静音时桌宠的不透明度。</summary>
@@ -80,8 +80,10 @@ internal sealed class PetForm : Form
             _contentHeight = maxPixels;
         }
 
-        _canvasWidth = _contentWidth + ShadowPad * 2;
-        _canvasHeight = _contentHeight + ShadowPad * 2;
+        // 留白随 DPI 放大：模糊半径与下移量同样按 DPI 缩放，固定物理留白会在高分屏裁掉阴影
+        int shadowPad = LogicalToPixels(ShadowPad);
+        _canvasWidth = _contentWidth + shadowPad * 2;
+        _canvasHeight = _contentHeight + shadowPad * 2;
 
         _bitmap = ComposePet();
         ClientSize = new Size(_canvasWidth, _canvasHeight);
@@ -227,9 +229,12 @@ internal sealed class PetForm : Form
 
             int blur = Math.Max(1, (int)Math.Round(4 * _dpiScale * scale));
             int drop = Math.Max(1, (int)Math.Round(6 * _dpiScale * scale));
-            using var shadow = CreateShadow(_source, width, height, blur, 0.6f);
-            g.DrawImage(shadow, new Rectangle(x0, y0 + drop, width, height));
-            g.DrawImage(_source, new Rectangle(x0, y0, width, height));
+            var content = new Rectangle(x0, y0, width, height);
+            // 阴影在整块画布上生成：模糊有足够余量自然消散，不会被内容区边界裁成硬边
+            using var shadow = CreateShadow(_source, _canvasWidth, _canvasHeight,
+                new Rectangle(x0, y0 + drop, width, height), blur, 0.6f);
+            g.DrawImageUnscaled(shadow, 0, 0);
+            g.DrawImage(_source, content);
         }
 
         if (_stone.Muted)
@@ -268,51 +273,51 @@ internal sealed class PetForm : Form
         }
     }
 
-    /// <summary>生成黑色剪影模糊阴影。</summary>
-    private static Bitmap CreateShadow(Bitmap source, int width, int height, int blur, float opacity)
+    /// <summary>把剪影画到整块画布上再模糊，生成黑色阴影；模糊在留白内自然消散，不被边界裁切。</summary>
+    private static Bitmap CreateShadow(Bitmap source, int canvasWidth, int canvasHeight, Rectangle dest, int blur, float opacity)
     {
-        using var silhouette = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+        using var silhouette = new Bitmap(canvasWidth, canvasHeight, PixelFormat.Format32bppArgb);
         using (var g = Graphics.FromImage(silhouette))
         {
             g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            g.DrawImage(source, new Rectangle(0, 0, width, height));
+            g.DrawImage(source, dest);
         }
 
-        var rect = new Rectangle(0, 0, width, height);
+        var rect = new Rectangle(0, 0, canvasWidth, canvasHeight);
         var data = silhouette.LockBits(rect, ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
         try
         {
-            var buffer = new byte[data.Stride * height];
+            var buffer = new byte[data.Stride * canvasHeight];
             Marshal.Copy(data.Scan0, buffer, 0, buffer.Length);
 
-            var alpha = new byte[width * height];
-            for (int y = 0; y < height; y++)
+            var alpha = new byte[canvasWidth * canvasHeight];
+            for (int y = 0; y < canvasHeight; y++)
             {
                 int rowStart = y * data.Stride;
-                for (int x = 0; x < width; x++)
+                for (int x = 0; x < canvasWidth; x++)
                 {
-                    alpha[y * width + x] = buffer[rowStart + x * 4 + 3];
+                    alpha[y * canvasWidth + x] = buffer[rowStart + x * 4 + 3];
                 }
             }
 
             // 三次盒式模糊近似高斯模糊
             for (int i = 0; i < 3; i++)
             {
-                BoxBlur(alpha, width, height, blur, horizontal: true);
-                BoxBlur(alpha, width, height, blur, horizontal: false);
+                BoxBlur(alpha, canvasWidth, canvasHeight, blur, horizontal: true);
+                BoxBlur(alpha, canvasWidth, canvasHeight, blur, horizontal: false);
             }
 
             byte op = (byte)Math.Clamp((int)Math.Round(opacity * 255f), 0, 255);
-            for (int y = 0; y < height; y++)
+            for (int y = 0; y < canvasHeight; y++)
             {
                 int rowStart = y * data.Stride;
-                for (int x = 0; x < width; x++)
+                for (int x = 0; x < canvasWidth; x++)
                 {
                     int offset = rowStart + x * 4;
                     buffer[offset] = 0;
                     buffer[offset + 1] = 0;
                     buffer[offset + 2] = 0;
-                    buffer[offset + 3] = (byte)(alpha[y * width + x] * op / 255);
+                    buffer[offset + 3] = (byte)(alpha[y * canvasWidth + x] * op / 255);
                 }
             }
 
